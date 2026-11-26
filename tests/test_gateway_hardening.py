@@ -68,12 +68,20 @@ def invoke(*args):
     return CliRunner().invoke(cli.main, [str(a) for a in args])
 
 
+def restored(*subjects):
+    """What the owner's `maps budget restore` leaves behind: these subjects are initialised."""
+    with Ledger(config.ledger_path()).transaction() as data:
+        for subject in subjects:
+            data.setdefault("initialized", {}).setdefault(subject, date.today().isoformat())
+
+
 def store_doc(usage):
     return json.loads(usage.read_text())
 
 
 def write_store(usage, months=None, **extra):
-    doc = {"initialized_on": date.today().isoformat(), "months": months or {}, "reconciliations": []}
+    marks = {s: date.today().isoformat() for s in policy.SPEND_SUBJECTS}
+    doc = {"initialized": marks, "months": months or {}, "reconciliations": []}
     doc.update(extra)
     usage.write_text(json.dumps(doc))
 
@@ -84,7 +92,7 @@ def _store_text(units: str, usd: str) -> str:
     month = "{" + f'"{ENT}": {row}' + "}"
     return (
         "{"
-        + f'"initialized_on": "{date.today().isoformat()}", "months": '
+        + f'"initialized": {{"google": "{date.today().isoformat()}"}}, "months": '
         + "{"
         + f'"{current_month()}": {month}'
         + "}}"
@@ -210,6 +218,7 @@ def test_units_reconciled_before_any_record_count_toward_the_period_cap(policy_d
         },
     )
     assert Ledger(config.ledger_path()).units(ENT) == 3000  # approving did not reset the counters
+    restored("google")  # the owner's figures were restored for the subject
     with pytest.raises(BudgetExceeded, match="period cap"):
         file_budget(mode="quality", max_usd=5.0).charge(ENT)
 
@@ -227,6 +236,7 @@ def test_units_recorded_under_billing_none_consume_the_allowance_when_billing_is
     grant_spend("google", "none")
     Ledger(usage).add(ENT, 1000, 0)
     grant_spend("google", "enabled")
+    restored("google")
     with pytest.raises(BudgetExceeded, match="free allowance exhausted"):
         file_budget().charge(ENT)
 
@@ -244,11 +254,11 @@ def test_the_provider_credit_is_still_subtracted(grant_spend, usage):
 # --- 3: a missing store is not zero usage ------------------------------------------------------------
 
 
-def test_recording_a_spend_approval_initialises_the_store(grant_spend, usage):
+def test_recording_a_first_enabled_spend_approval_initialises_the_store(grant_spend, usage):
     assert not usage.exists()
-    grant_spend("google", "none")
+    grant_spend("google", "enabled")
     doc = store_doc(usage)
-    assert doc["initialized_on"] == date.today().isoformat() and doc["months"] == {}
+    assert doc["initialized"] == {"google": date.today().isoformat()} and doc["months"] == {}
     Ledger(usage).add(ENT, 7, 0)
     grant_spend("google", "enabled")  # a second approval keeps the counters
     assert Ledger(usage).units(ENT) == 7
@@ -286,7 +296,7 @@ def test_a_second_checkout_with_approvals_but_no_usage_file_is_refused(spending_
 def test_a_deleted_store_is_simply_recreated_under_billing_none(spending_none, usage):
     usage.unlink()
     file_budget().charge(ENT)
-    assert store_doc(usage)["initialized_on"] and Ledger(usage).units(ENT) == 1
+    assert store_doc(usage)["initialized"] and Ledger(usage).units(ENT) == 1
 
 
 def test_the_preflight_refuses_too(spending_enabled, usage):
@@ -309,7 +319,7 @@ def test_restore_needs_a_figure_for_every_sku_with_a_finite_free_allowance(spend
         args += ["--sku", f"{n}={500 if n == ENT else 0}"]
     r = invoke(*args)
     assert r.exit_code == 0, r.output
-    assert store_doc(usage)["initialized_on"] and Ledger(usage).units(ENT) == 500
+    assert "google" in store_doc(usage)["initialized"] and Ledger(usage).units(ENT) == 500
     file_budget().charge(ENT)  # usable again
     assert Ledger(usage).units(ENT) == 501
 
@@ -703,6 +713,7 @@ def test_the_daily_request_cap_stops_many_short_runs(grant_spend, usage):
 def test_the_default_daily_cap_is_2000_and_the_maximum_20000(grant_spend, usage):
     assert (DEFAULT_DAILY_REQUEST_CAP, MAX_DAILY_REQUEST_CAP) == (2000, 20000)
     grant_spend("google", "none")
+    file_budget().charge("google.text_search.ids")  # the first use creates the store
     doc = store_doc(usage)
     doc["days"] = {current_day(): {"google": 1999}}
     usage.write_text(json.dumps(doc))
@@ -778,12 +789,12 @@ def test_a_stale_lease_does_not_block(spending_none, usage):
     b.charge("google.text_search.ids")
     leases = store_doc(usage)["leases"]
     assert len(leases) == 2 and {"pid", "host", "started"} <= set(leases[0])
-    t[0] = 1000.0 + 900 + 59
+    t[0] = 1000.0 + 900 + 300 + 59
     with pytest.raises(BudgetExceeded, match="2 runs"):
         file_budget(wall_clock=lambda: t[0]).charge("google.text_search.ids")
-    t[0] = 1000.0 + 900 + 61
+    t[0] = 1000.0 + 900 + 300 + 61
     c = file_budget(wall_clock=lambda: t[0])
-    c.charge("google.text_search.ids")  # both leases are older than max_elapsed_s + 60 s
+    c.charge("google.text_search.ids")  # both leases are older than max_elapsed_s + 300 s + 60 s
     assert len(store_doc(usage)["leases"]) == 1
     for x in (a, b, c):
         x.close()

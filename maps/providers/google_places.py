@@ -22,9 +22,10 @@ from ..budget import Budget, BudgetExceeded
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
-from .http import make_client
+from .http import make_client, request_timeout
 
 BASE_URL = "https://places.googleapis.com/v1"
+TIMEOUT_S = 30.0  # one request's own timeout; the run's remaining time can only shorten it
 SEARCH_URL = f"{BASE_URL}/places:searchText"
 PAGE_SIZE = 20
 RESULT_CAP = 60  # Google returns at most 3 pages of 20 per query
@@ -80,7 +81,7 @@ class GooglePlaces:
         self.budget = budget
         self.tier = _check_tier(tier)
         self._key = api_key if api_key is not None else os.environ.get("GOOGLE_MAPS_API_KEY", "")
-        self._client = client or make_client(timeout=30.0)
+        self._client = client or make_client(timeout=TIMEOUT_S)
         self._sleep = sleep
 
     def available(self) -> bool:
@@ -116,7 +117,14 @@ class GooglePlaces:
         detail = ""
         for attempt in (0, 1):
             try:
-                resp = self._client.request(method, url, json=json, params=params, headers=headers)
+                resp = self._client.request(
+                    method,
+                    url,
+                    json=json,
+                    params=params,
+                    headers=headers,
+                    timeout=request_timeout(self.budget, TIMEOUT_S),
+                )
             except httpx.HTTPError as e:
                 raise ProviderError(f"google: request failed ({type(e).__name__})") from None
             if 200 <= resp.status_code < 300:

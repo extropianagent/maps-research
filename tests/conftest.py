@@ -70,6 +70,17 @@ def grant_spend():
     return go
 
 
+def mark_initialised(*subjects):
+    """What the owner's `maps budget restore` does for these billing subjects (tests need a usable store)."""
+    from datetime import date
+
+    from maps.budget import Ledger
+
+    with Ledger(config.ledger_path()).transaction() as data:
+        for subject in subjects:
+            data.setdefault("initialized", {}).setdefault(subject, date.today().isoformat())
+
+
 @pytest.fixture
 def grant_service_use():
     """Record the owner's check of Google's terms for a core provider."""
@@ -92,6 +103,7 @@ def spending_enabled(grant_spend):
     for subject in ("google", "apify", "dataforseo"):
         grant_spend(subject, "enabled")
     grant_spend("gemini", "none")
+    mark_initialised("google", "apify", "dataforseo")
 
 
 @pytest.fixture
@@ -102,6 +114,7 @@ def spending_none(grant_spend):
     for subject in ("google", "gemini", "apify"):
         grant_spend(subject, "none")
     grant_spend("dataforseo", "enabled")
+    mark_initialised("dataforseo")
 
 
 @pytest.fixture

@@ -13,6 +13,7 @@ from contextlib import contextmanager
 import httpx
 
 from .. import policy
+from ..budget import Budget
 
 _unchecked = False
 
@@ -26,6 +27,12 @@ def unchecked_proxy() -> Iterator[None]:
         yield
     finally:
         _unchecked = previous
+
+
+def request_timeout(budget: Budget, own: float) -> float:
+    """The timeout of one request: the provider's own, but never beyond what the run's time limit has
+    left, and never below one second."""
+    return max(1.0, min(own, budget.remaining_elapsed_s()))
 
 
 def make_client(*, timeout: float) -> httpx.Client:

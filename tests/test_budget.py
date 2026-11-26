@@ -88,7 +88,7 @@ def test_usage_is_counted_per_billing_month(ledger, monkeypatch):
 
 def test_ledger_persists_across_processes(tmp_path):
     path = tmp_path / "state" / "usage.json"
-    Ledger(path).initialize()  # the owner's spend record created the store
+    Ledger(path).initialize_first_time("google")  # the owner's first spend record created the store
     Budget(Ledger(path)).charge("google.aggregate", 3)
     assert Ledger(path).units("google.aggregate") == 3
 

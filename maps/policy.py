@@ -207,18 +207,19 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
         if not (isinstance(r, dict) and (r.get("subject"), r.get("kind")) == (subject, kind))
     ]
     _write("approvals.json", [*kept, record])
-    if kind == "spend":
-        _initialise_usage_store()
+    if kind == "spend" and details["billing"] == "enabled":
+        _initialise_usage_store(subject)
     return record
 
 
-def _initialise_usage_store() -> None:
-    """A spend record is the moment the usage store starts to exist: from now on a missing store is not
-    zero usage. A store that cannot be used is left alone (the gateway refuses it, with the reason)."""
+def _initialise_usage_store(subject: str) -> None:
+    """True first-time setup of a billing-enabled subject: only when no usage store exists anywhere yet
+    does the record initialise it, and only that subject. Otherwise (a lost or older store) the owner
+    restores with `maps budget restore`. A store that cannot be used is left alone."""
     from .budget import Ledger, LedgerUnavailable
 
     try:
-        Ledger(config.ledger_path()).initialize()
+        Ledger(config.ledger_path()).initialize_first_time(subject)
     except LedgerUnavailable:
         pass
 
@@ -707,7 +708,7 @@ def detect_enforcement(status_code: int, text: str | None) -> str | None:
 
 # --- proxies from the environment ---------------------------------------------------------------
 
-PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy")
+PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy")  # matched in any letter case, as httpx/urllib do
 
 
 def _is_loopback(host: str) -> bool:
@@ -721,8 +722,10 @@ def _is_loopback(host: str) -> bool:
 
 def check_proxy_env() -> None:
     """Refuse a proxy set in the environment unless it is loopback or the owner recorded it."""
-    for var in PROXY_VARS:
-        value = (os.environ.get(var) or "").strip()
+    for var, raw in sorted(os.environ.items()):
+        if var.lower() not in PROXY_VARS:
+            continue
+        value = (raw or "").strip()
         if not value:
             continue
         try:

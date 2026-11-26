@@ -51,7 +51,7 @@ def test_the_ledger_lives_in_the_policy_folder(policy_dir):
 def test_the_store_holds_counters_only(spending_enabled, usage):
     file_budget().charge("google.text_search.pro", 2, fingerprint="a")
     doc = json.loads(usage.read_text())
-    assert set(doc) == {"initialized_on", "months", "reconciliations", "days", "leases"}
+    assert set(doc) == {"initialized", "months", "reconciliations", "days", "leases"}
     assert doc["months"][current_month()] == {"google.text_search.pro": {"units": 2, "usd": 0}}
     assert doc["reconciliations"] == []
     assert not list(usage.parent.glob("*.tmp"))  # atomic replace leaves no temp file behind

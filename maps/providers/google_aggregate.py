@@ -22,9 +22,10 @@ from .. import policy
 from ..budget import Budget, BudgetExceeded
 from ..geography import BBox
 from .base import PolicyStop, ProviderError, QuotaExceeded
-from .http import make_client
+from .http import make_client, request_timeout
 
 URL = "https://areainsights.googleapis.com/v1:computeInsights"
+TIMEOUT_S = 60.0  # one request's own timeout; the run's remaining time can only shorten it
 PLACES_LIMIT = 100  # INSIGHT_PLACES returns at most this many IDs per request
 OPERATIONAL = ["OPERATING_STATUS_OPERATIONAL"]
 ALL_STATUSES = [
@@ -63,7 +64,7 @@ class PlacesAggregate:
     ) -> None:
         self.budget = budget
         self._key = api_key if api_key is not None else os.environ.get("GOOGLE_MAPS_API_KEY", "")
-        self._client = client or make_client(timeout=60.0)
+        self._client = client or make_client(timeout=TIMEOUT_S)
 
     def available(self) -> bool:
         return bool(self._key)
@@ -101,7 +102,12 @@ class PlacesAggregate:
         body = {"insights": [insight], "filter": flt}
         self.budget.charge("google.aggregate", fingerprint=Budget.fingerprint("POST", URL, body))
         try:
-            resp = self._client.post(URL, json=body, headers={"X-Goog-Api-Key": self._key})
+            resp = self._client.post(
+                URL,
+                json=body,
+                headers={"X-Goog-Api-Key": self._key},
+                timeout=request_timeout(self.budget, TIMEOUT_S),
+            )
         except httpx.HTTPError as e:
             raise ProviderError(f"google aggregate: request failed ({type(e).__name__})") from None
         detail = ""

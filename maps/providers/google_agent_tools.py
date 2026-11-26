@@ -57,9 +57,10 @@ from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
-from .http import make_client
+from .http import make_client, request_timeout
 
 DEFAULT_ENDPOINT = "https://mapstools.googleapis.com/mcp"
+TIMEOUT_S = 60.0  # one request's own timeout; the run's remaining time can only shorten it
 PROTOCOL_VERSION = "2025-06-18"
 TOOL_NAME = "search_places"
 SKU = "google.agent_tools.search"
@@ -254,7 +255,7 @@ class MapsAgentTools:
     ) -> None:
         self.budget = budget
         self._key = api_key if api_key is not None else os.environ.get("GOOGLE_MAPS_API_KEY", "")
-        self._client = client or make_client(timeout=60.0)
+        self._client = client or make_client(timeout=TIMEOUT_S)
         self._endpoint = endpoint
         self._next_id = 0
         self._session_id: str | None = None
@@ -283,7 +284,12 @@ class MapsAgentTools:
         if self._protocol:
             headers["MCP-Protocol-Version"] = self._protocol
         try:
-            resp = self._client.post(self._endpoint, json=payload, headers=headers)
+            resp = self._client.post(
+                self._endpoint,
+                json=payload,
+                headers=headers,
+                timeout=request_timeout(self.budget, TIMEOUT_S),
+            )
         except httpx.HTTPError as e:
             raise ProviderError(f"google_agent_tools: request failed ({type(e).__name__})") from None
         detail = ""

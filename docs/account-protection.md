@@ -56,7 +56,7 @@ things. A missing record is a refusal, never a warning.
 | Stop and notify on enforcement | A response that mentions suspension, a ban, abuse, unusual traffic, a CAPTCHA or a terms violation halts the whole run after that one request, exits with code 3, and blocks the provider's whole family until the owner clears it: all Google providers share one key, so a stop on one blocks all of them, and likewise for Apify. |
 | No personal Google passwords, cookies or session tokens to extraction tools | Every payload sent to an extraction service is scanned. Cookie, session, password and login fields, Google session cookies and Google sign-in tokens are refused before sending. |
 | Dedicated project, restricted credentials | A personal sign-in token given in place of a Google API key is refused: access tokens, refresh tokens, bearer values and signed tokens. The code cannot tell whether a key belongs to a dedicated project. |
-| No bypassing access controls | No proxy or CAPTCHA options are ever sent, and payloads carrying them are refused. A proxy set in the environment is refused unless it is on this machine or the owner has recorded it, and one carrying a username and password is always refused. A request refused for enforcement is not retried. |
+| No bypassing access controls | No proxy or CAPTCHA options are ever sent, and payloads carrying them are refused. A proxy set in the environment, under any spelling of the variable name, is refused unless it is on this machine or the owner has recorded it, and one carrying a username and password is always refused. A request refused for enforcement is not retried. |
 | No consumer AI subscriptions as APIs | The toolkit calls no AI service except Google's own Gemini API for Maps grounding, with an API key. A test fails if another is added. |
 | No prohibited storage or indexing | Run data and cached areas expire, checked on every command. Retention is capped at 30 days however it is configured, a run can only be named by its ID and never by a path, and a state folder inside the repository is refused. Embeddings for semantic search live inside the run and expire with it. Nothing trains a model. |
 | Maps output only to a compatible AI | Every command that returns or shows data from a real provider refuses to run until the AI host is named in `MAPS_AI_HOST` and recorded as checked. |
@@ -64,9 +64,11 @@ things. A missing record is a refusal, never a warning.
 
 ## Spending protection
 
-> **Status, 2026-11-26:** an independent review found ways past this gateway.
-> Fixes are in progress. Do not make a chargeable request until this notice is
-> removed.
+> **Before using a key that can be charged:** set quota caps in the provider's
+> own console first. This gateway was reviewed twice on 2026-11-26 and the holes
+> found were closed, but it has two limits no local code removes (below). With a
+> key that has no billing attached, such as Google's Maps Demo Key, nothing can
+> be charged whatever happens here.
 
 Runaway cost is a separate risk from account enforcement, and it gets its own
 gate. Every request to every provider, including later pages, retries and
@@ -86,7 +88,7 @@ reserves its cost before the request is sent.
 | Ceilings across runs | A daily request cap per billing subject (2,000 unless the owner records another) and at most two runs at once. |
 | Kill switch | `maps policy kill --reason "..."` stops every real request at once. Anyone may pull it. Only the owner lifts it: `maps policy resume --owner-statement "..."`. |
 | Counters survive the machine | Usage is kept in `policy/usage.json`: numbers only, no Maps content. Commit it after any session that made real requests. |
-| A lost counter is not zero | With billing enabled, a missing, empty or unreadable usage file stops everything. The owner restores it from the provider's console: `maps budget restore --owner-statement "..." --sku SKU=UNITS`. |
+| A lost counter is not zero | With billing enabled, a provider whose usage record is missing, empty or unreadable is stopped, and using another provider does not bring it back. The owner restores it from the provider's console: `maps budget restore --owner-statement "..." --sku SKU=UNITS`. |
 | Reconciliation | The toolkit cannot see usage from elsewhere. The owner copies the month's figure from the provider's console: `maps budget reconcile --sku SKU --units N --owner-statement "..."`. The counter only goes up. |
 
 What this cannot do:
@@ -98,6 +100,12 @@ What this cannot do:
   each record matches the last commit, which makes a self-made record visible,
   not impossible. An AI that uses the toolkit only through the MCP server has no
   such commands.
+- **Its counters belong to one copy of the repository.** A second clone, a
+  worktree, or two cloud sessions running at once each start from the last
+  committed numbers and each count separately, so each can use the remaining
+  allowance, and a kill switch or stop that was not committed is unknown to the
+  others. A shared count would need a shared server, which this toolkit does
+  not have. Run one session at a time against a billed key.
 - **It only sees its own requests.** A stolen key, or other software using the
   same key, is invisible to it.
 
@@ -199,9 +207,11 @@ in the owner's words, in git, where a change shows in the history, and why
 `AGENTS.md` makes those commands the owner's decision alone. Review changes to
 `policy/` and `maps/policy.py` like any change to a lock.
 
-The layer was attacked twice by an independent reviewer on 2026-11-26. Both
-passes found ways past it, which were then closed with regression tests. A
-third pass would likely find more. Treat it as a strong default, not a proof.
+Independent reviewers attacked this layer four times on 2026-11-26: twice the
+access rules, twice the spending gateway. Every pass found ways past it, which
+were then closed with regression tests, apart from the limits stated in this
+file. Another pass would likely find more. Treat it as a strong default, not a
+proof.
 
 ## Known gaps
 

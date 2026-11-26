@@ -31,7 +31,7 @@ from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, SearchPage
-from .http import make_client
+from .http import make_client, request_timeout
 
 BASE_URL = "https://api.dataforseo.com/v3"
 OK = 20000
@@ -76,6 +76,7 @@ class DataForSEOProvider:
         self.budget = budget
         self._login = login if login is not None else os.environ.get("DATAFORSEO_LOGIN", "")
         self._password = password if password is not None else os.environ.get("DATAFORSEO_PASSWORD", "")
+        self._timeout = timeout
         self._client = client or make_client(timeout=timeout)
         self.poll_timeout = poll_timeout
         self.poll_interval = poll_interval
@@ -93,7 +94,11 @@ class DataForSEOProvider:
         policy.check_outbound_payload(self.name, body)
         try:
             resp = self._client.request(
-                method, f"{BASE_URL}{path}", json=body, auth=(self._login, self._password)
+                method,
+                f"{BASE_URL}{path}",
+                json=body,
+                auth=(self._login, self._password),
+                timeout=request_timeout(self.budget, self._timeout),
             )
         except httpx.HTTPError as e:
             raise ProviderError(f"dataforseo: request failed ({type(e).__name__})") from None

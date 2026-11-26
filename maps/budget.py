@@ -46,6 +46,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import logging
 import math
 import os
 import socket
@@ -65,6 +66,8 @@ from zoneinfo import ZoneInfo
 
 from .pricing import PROVIDER_FREE_USD, SKUS, Sku
 
+_log = logging.getLogger(__name__)
+
 # Google bills by Pacific-time calendar month.
 BILLING_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -78,7 +81,8 @@ UNKNOWN_PRICE_MONTHLY_UNITS = 1_000  # under billing none, a SKU whose price is 
 DEFAULT_DAILY_REQUEST_CAP = 2_000  # requests per billing subject per day; only the owner's record changes it
 MAX_DAILY_REQUEST_CAP = 20_000
 MAX_ACTIVE_RUNS = 2  # runs that may hold a lease on one store at once
-LEASE_GRACE_S = 60.0  # a lease older than the run's max_elapsed_s plus this is ignored
+CLIENT_TIMEOUT_S = 300.0  # the largest provider client timeout (Apify, DataForSEO)
+LEASE_GRACE_S = 60.0  # a lease older than the run's max_elapsed_s + CLIENT_TIMEOUT_S + this is ignored
 LOCK_TIMEOUT_S = 10.0  # how long a request waits for the store lock before it is refused
 DAYS_KEPT = 8
 # depth -> (max_requests, max_elapsed_s)
@@ -122,7 +126,8 @@ def current_day() -> str:
 
 
 def _today() -> date:
-    return date.today()
+    """Today's date in the billing time zone (price freshness and `initialized` dates)."""
+    return datetime.now(BILLING_TZ).date()
 
 
 # --- exact numbers -------------------------------------------------------------------------------
@@ -192,7 +197,7 @@ def _list_usd(sku: Sku, units: Decimal | int) -> Decimal:
 
 
 def _empty() -> dict[str, Any]:
-    return {"months": {}, "reconciliations": [], "days": {}, "leases": []}
+    return {"initialized": {}, "months": {}, "reconciliations": [], "days": {}, "leases": []}
 
 
 def _units(data: dict[str, Any], month: str, sku: str) -> Decimal:
@@ -241,13 +246,45 @@ def _add(data: dict[str, Any], month: str, sku: str, units: Decimal | int) -> No
     row["usd"] = _list_usd(SKUS[sku], row["units"]) if sku in SKUS else ZERO
 
 
+def _all_subjects() -> tuple[str, ...]:
+    from . import policy
+
+    return tuple(policy.SPEND_SUBJECTS)
+
+
+def _lease_live(lease: dict[str, Any], now: float) -> bool:
+    """A lease is live for its run's time limit + the largest client timeout + the grace; a lease
+    from this host whose process no longer exists is expired at once."""
+    window = float(lease["max_elapsed_s"]) + CLIENT_TIMEOUT_S + LEASE_GRACE_S
+    if now - float(lease["started"]) > window:
+        return False
+    pid = int(lease["pid"])
+    if lease["host"] == socket.gethostname() and pid > 0:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:  # not permitted (or anything else): fall back to the time rule
+            pass
+    return True
+
+
 def _release_lease(ledger: Ledger, run_id: str) -> None:
-    """Remove a run's lease from its store. Never raises: it also runs at interpreter exit."""
+    """Remove a run's lease from its store. Never raises: it also runs at interpreter exit.
+
+    A busy lock is waited for (the transaction retries until the ledger's lock deadline). When the
+    lease still cannot be removed, a warning goes to stderr (logging's default) instead of silence: the
+    lease then lapses by itself, or at once when this process is gone."""
     try:
         with ledger.transaction() as data:
             data["leases"] = [lease for lease in data["leases"] if lease.get("id") != run_id]
-    except Exception:  # noqa: BLE001 - nothing to release if the store is gone or unusable
-        pass
+    except Exception as e:  # noqa: BLE001 - never raise from close() or interpreter exit
+        _log.warning(
+            "the run's lease %s could not be released from %s (%s); it lapses on its own",
+            run_id[:8],
+            ledger.path,
+            str(e)[:120],
+        )
 
 
 class Ledger:
@@ -264,7 +301,9 @@ class Ledger:
         self.path = str(path)
         self.memory = self.path == ":memory:"
         self._mem = _empty()
-        self._mem["initialized_on"] = _today().isoformat()  # nothing to lose: it is not a file
+        self._mem["initialized"] = {  # nothing to lose: it is not a file
+            s: _today().isoformat() for s in _all_subjects()
+        }
         self._tlock = threading.RLock()
         self._active: dict[str, Any] | None = None
         self._lock_timeout = lock_timeout
@@ -280,11 +319,12 @@ class Ledger:
             "restore` with the provider console's figures"
         )
 
-    def not_initialised(self) -> LedgerUnavailable:
+    def not_initialised(self, subject: str = "") -> LedgerUnavailable:
+        who = f" for {subject}" if subject else ""
         return LedgerUnavailable(
-            f"the usage store {self.path} is missing, empty or not initialised (no 'initialized_on'): a "
-            "missing store is not zero usage, so every chargeable request is refused under billing "
-            "enabled. Recover: restore the committed usage.json, or the owner reconciles from the "
+            f"the usage store {self.path} is missing, empty or not initialised{who} (no 'initialized' "
+            "entry for the subject): a missing store is not zero usage, so every chargeable request is "
+            "refused under billing enabled. Recover: restore the committed usage.json, or the owner reconciles from the "
             "provider's console: maps budget restore --owner-statement \"<owner's words>\" --sku "
             "SKU=UNITS (one figure for each SKU with a finite free allowance)"
         )
@@ -305,12 +345,20 @@ class Ledger:
                     raise self._fail(f"has a money figure that is not a number from 0 to {MAX_MONEY:,}")
         if not isinstance(doc.setdefault("reconciliations", []), list):
             raise self._fail("has no valid 'reconciliations' list")
-        init = doc.get("initialized_on")
+        init = doc.get("initialized_on")  # the old store-wide marker: kept readable, initialises no subject
         if init is not None:
             try:
                 date.fromisoformat(init)
             except (TypeError, ValueError):
                 raise self._fail("has an 'initialized_on' that is not a date") from None
+        marks = doc.setdefault("initialized", {})
+        if not isinstance(marks, dict):
+            raise self._fail("has no valid 'initialized' object")
+        for subject, day in marks.items():
+            try:
+                date.fromisoformat(day)
+            except (TypeError, ValueError):
+                raise self._fail(f"has an 'initialized' date for {subject!r} that is not a date") from None
         days = doc.setdefault("days", {})
         if not isinstance(days, dict):
             raise self._fail("has no valid 'days' object")
@@ -430,12 +478,15 @@ class Ledger:
         with self._tlock:
             return self._active if self._active is not None else self._load()
 
-    def initialize(self) -> bool:
-        """Create the store, or add `initialized_on` to a usable one that lacks it. True when it changed."""
+    def initialize_first_time(self, subject: str) -> bool:
+        """True first-time setup of one billing subject: only when no store file exists yet and no
+        subject is initialised. Anything else needs `maps budget restore`. True when it changed."""
+        if not self.memory and Path(self.path).exists():
+            return False
         with self.transaction() as data:
-            if data.get("initialized_on"):
+            if data.get("initialized"):
                 return False
-            data["initialized_on"] = _today().isoformat()
+            data["initialized"] = {subject: _today().isoformat()}
             return True
 
     # -- queries ------------------------------------------------------------------------------
@@ -636,8 +687,8 @@ class Budget:
         try:
             data = self.ledger.read()  # an unusable store refuses everything
             details = self._gate(subject, PROVIDER_SKUS.get(provider, ()))
-            if details["billing"] == "enabled" and not data.get("initialized_on"):
-                raise self.ledger.not_initialised()
+            if details["billing"] == "enabled" and subject not in data.get("initialized", {}):
+                raise self.ledger.not_initialised(subject)
         except BudgetExceeded as e:
             raise GatewayRefusal(str(e)) from None
 
@@ -795,10 +846,10 @@ class Budget:
     ) -> list[Quote]:
         """Every limit that needs the store, evaluated on `data` (which the caller commits or discards)."""
         month = current_month()
-        if not data.get("initialized_on"):
+        if subject not in data.setdefault("initialized", {}):
             if details["billing"] == "enabled":
-                raise self.ledger.not_initialised()
-            data["initialized_on"] = _today().isoformat()  # billing none: a missing store is created
+                raise self.ledger.not_initialised(subject)
+            data["initialized"][subject] = _today().isoformat()  # billing none: first use, for itself only
         if record:
             self._take_lease(data)
         day, counts = current_day(), data["days"]
@@ -823,18 +874,14 @@ class Budget:
     def _take_lease(self, data: dict[str, Any]) -> None:
         """Hold one of the MAX_ACTIVE_RUNS leases on this store, or refuse."""
         now = self._wall_clock()
-        live = [
-            lease
-            for lease in data["leases"]
-            if now - float(lease["started"]) <= float(lease["max_elapsed_s"]) + LEASE_GRACE_S
-        ]
+        live = [lease for lease in data["leases"] if _lease_live(lease, now)]
         if not any(lease["id"] == self._run_id for lease in live):
             if len(live) >= MAX_ACTIVE_RUNS:
                 data["leases"] = live
                 raise BudgetExceeded(
                     f"{len(live)} runs are already active on this usage store (at most {MAX_ACTIVE_RUNS} "
                     "runs at once); wait for one to finish. A run that died is ignored after its time "
-                    f"ceiling plus {LEASE_GRACE_S:g} s"
+                    f"ceiling plus {CLIENT_TIMEOUT_S:g} s plus {LEASE_GRACE_S:g} s"
                 )
             live.append(
                 {
@@ -954,7 +1001,7 @@ class Budget:
                     k: {"max_requests": v[0], "max_elapsed_s": v[1]} for k, v in DEPTH_CEILINGS.items()
                 },
             },
-            "store": {"initialized_on": data.get("initialized_on"), "active_runs": len(data["leases"])},
+            "store": {"initialized": data.get("initialized", {}), "active_runs": len(data["leases"])},
             "kill_switch": policy.kill_status(),
             "reconciliations": _plain(data["reconciliations"][-10:]),
         }
@@ -1042,11 +1089,11 @@ class Budget:
                         "statement": f"restore: {owner_statement.strip()}",
                     }
                 )
-            data.setdefault("initialized_on", _today().isoformat())
-            if not data["initialized_on"]:
-                data["initialized_on"] = _today().isoformat()
+            marks = data.setdefault("initialized", {})
+            for subject in subjects:
+                marks.setdefault(subject, _today().isoformat())
             return {
                 "month": month,
-                "initialized_on": data["initialized_on"],
+                "initialized": {s: marks[s] for s in subjects},
                 "restored": {k: json_number(v) for k, v in sorted(parsed.items())},
             }

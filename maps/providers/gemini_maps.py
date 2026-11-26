@@ -42,9 +42,10 @@ from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
 from .google_agent_tools import AgentSearchResult
-from .http import make_client
+from .http import make_client, request_timeout
 
 BASE_URL = "https://generativelanguage.googleapis.com"
+TIMEOUT_S = 60.0  # one request's own timeout; the run's remaining time can only shorten it
 DEFAULT_MODEL = "gemini-flash-latest"  # unconfirmed alias; override with MAPS_GEMINI_MODEL
 SKU = "google.gemini_maps_grounding"
 RAW_TEXT_LIMIT = 2_000
@@ -69,7 +70,7 @@ class GeminiMaps:
     ) -> None:
         self.budget = budget
         self._key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", "")
-        self._client = client or make_client(timeout=60.0)
+        self._client = client or make_client(timeout=TIMEOUT_S)
         self.model = model or os.environ.get("MAPS_GEMINI_MODEL") or DEFAULT_MODEL
 
     def available(self) -> bool:
@@ -101,7 +102,9 @@ class GeminiMaps:
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         headers = {"Content-Type": "application/json", "x-goog-api-key": self._key}
         try:
-            resp = self._client.post(self._url(), json=body, headers=headers)
+            resp = self._client.post(
+                self._url(), json=body, headers=headers, timeout=request_timeout(self.budget, TIMEOUT_S)
+            )
         except httpx.HTTPError as e:
             raise ProviderError(f"gemini_maps: request failed ({type(e).__name__})") from None
         if not 200 <= resp.status_code < 300:
