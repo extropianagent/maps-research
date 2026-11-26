@@ -76,21 +76,34 @@ reserves its cost before the request is sent.
 | Rule | How it works |
 |---|---|
 | No authorization, no request | Each billing subject (`google`, `gemini`, `apify`, `dataforseo`) needs a spend record from the owner. Without one, nothing is sent. |
-| A credential that cannot be charged is recorded as such | `--billing none`, for Google's Maps Demo Key. Requests are counted and the ceilings below still apply. |
+| A credential that cannot be charged is recorded as such | `--billing none`, for Google's Maps Demo Key. The free-mode limits still apply, in case the declaration is wrong: nothing beyond 90% of a free allowance, no paid mode, and at most 1,000 requests a month to any service whose price is unconfirmed. |
 | Unknown price means block | With billing enabled, the owner records when and where they read the prices. After 90 days the record is stale and requests stop. Services whose price is unconfirmed (agent tools, Gemini grounding, contributor lookup) are blocked under billing, never assumed free. |
 | Caps are the owner's | A per-search cap and a monthly cap, both recorded by the owner. `--max-usd` cannot exceed the first, and the month's spending cannot exceed the second. |
 | Free by default | Without `--cost quality`, nothing that would cost money is sent, and each free allowance stops at 90%. |
 | Reservation is atomic | Two runs at once cannot both take the last free unit or the last dollar. |
 | A retry is a request | It is reserved and counted like any other. |
-| Ceilings per run | A maximum number of requests, a maximum running time, and no more than three identical requests. |
+| Ceilings per run | A maximum number of requests, a maximum running time, and no more than three identical requests. Every request counts, including setup requests and polls that cost nothing. |
+| Ceilings across runs | A daily request cap per billing subject (2,000 unless the owner records another) and at most two runs at once. |
 | Kill switch | `maps policy kill --reason "..."` stops every real request at once. Anyone may pull it. Only the owner lifts it: `maps policy resume --owner-statement "..."`. |
-| Counters survive the machine | Usage is kept in `policy/usage.json`: numbers only, no Maps content. Commit it after any session that made real requests. If it cannot be read, everything stops. |
+| Counters survive the machine | Usage is kept in `policy/usage.json`: numbers only, no Maps content. Commit it after any session that made real requests. |
+| A lost counter is not zero | With billing enabled, a missing, empty or unreadable usage file stops everything. The owner restores it from the provider's console: `maps budget restore --owner-statement "..." --sku SKU=UNITS`. |
 | Reconciliation | The toolkit cannot see usage from elsewhere. The owner copies the month's figure from the provider's console: `maps budget reconcile --sku SKU --units N --owner-statement "..."`. The counter only goes up. |
 
-What this cannot do: it bounds requests made through this toolkit. It does not
-protect a stolen key or other software using the same key. A quota cap set in
-the provider's own console remains the outer limit (`docs/setup.md`), and
-billing alerts are only alerts.
+What this cannot do:
+
+- **It cannot bind an agent that decides to authorize itself.** The records are
+  files, and the commands that write them are ordinary commands. An agent with
+  a shell can run them with a made-up owner statement, and nothing in the file
+  tells the owner's record from an agent's. `maps policy status` shows whether
+  each record matches the last commit, which makes a self-made record visible,
+  not impossible. An AI that uses the toolkit only through the MCP server has no
+  such commands.
+- **It only sees its own requests.** A stolen key, or other software using the
+  same key, is invisible to it.
+
+So the limit that holds regardless is on the provider's side, where the agent
+has no access: a key with no billing attached, or quota caps set in the
+provider's console (`docs/setup.md`). Billing alerts are only alerts.
 
 ## What the code cannot check
 
