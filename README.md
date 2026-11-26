@@ -128,6 +128,7 @@ tests/       the test suite (mocked APIs and simulator)
 ## More
 
 - `docs/setup.md`: API key, where to run it, first live run.
+- `docs/mcp.md`: the MCP server, for using the toolkit from Claude or another client without a shell.
 - `docs/permissions.md`: what Google's terms allow you to keep and share.
 - `evals/README.md`: how changes to search are tested.
 - `AGENTS.md`: rules for any AI agent working in this repo.

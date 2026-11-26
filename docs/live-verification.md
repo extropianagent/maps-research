@@ -60,6 +60,35 @@ this file and the code together. Tick an item only after seeing a real response.
 - [ ] `depth` semantics and the item keys of `maps_search` results.
 - [ ] Reviews task flow: task id field, readiness status codes, review item keys.
 
+## Maps Experience agent tools: `maps/providers/google_agent_tools.py`
+
+- [ ] The endpoint, the MCP handshake and the protocol version are accepted.
+- [ ] `search_places` input names (`text_query`, `location_bias`, language) as
+      discovered from the live `tools/list`.
+- [ ] The result shape: where place IDs, names and Google Maps links appear.
+- [ ] It is still free, and its quota.
+
+## Semantic review search: `maps/semantic.py`
+
+- [ ] The default model downloads and loads with `uv sync --extra semantic`.
+- [ ] It matches Arabic reviews for English queries well enough to be useful.
+      If not, try another model with `--model` and log it in
+      `evals/experiments.md`.
+
+## Contributor lookup: `ApifyProvider.contributor_reviews`
+
+- [ ] The default actor exists, accepts `startUrls` + `maxItems`, and what it
+      costs (one source says a monthly rental).
+- [ ] Output field names for the place ID, place name, the contributor's own
+      star rating and the review text.
+- [ ] How many reviews per contributor it returns (one source says about 10).
+
+## MCP server: `maps/mcp_server.py`
+
+- [ ] A real client (Claude) connects over HTTP with the bearer token.
+- [ ] The Docker image builds and runs; the Cloud Run deploy in `docs/mcp.md`
+      works.
+
 ## Hosts
 
 - [ ] Which AI hosts may read the results under their data settings

@@ -69,6 +69,12 @@ Run `maps followups RUN`. It lists place types and name words in the results
 that no query used. Add the promising ones with
 `maps search --resume RUN -q "new term:lang"` (earlier queries replay free).
 
+When the owner describes a quality, not a category ("quiet", "known for its
+sourdough"), also ask Google's agent tools in plain words:
+`maps discover "quiet bakery known for sourdough" --into RUN`, then
+`maps details RUN --missing` so the new places have ratings. It returns a short
+curated list, so it adds candidates; it never replaces the search.
+
 **Done when** a follow-up pass adds no new place that passes the filters, or two
 passes have run.
 
@@ -84,12 +90,18 @@ five places unless the owner says otherwise), then test it:
    what the owner cares about, and how it fails (for a tiler: "level grout
    finish" and "cracked uneven redo late"). One command per set, each run once:
    `maps reviews search RUN "level grout finish" --by-place`.
+   Add `--mode hybrid` when `maps doctor` shows `semantic` installed: it also
+   matches paraphrases and reviews in the other language.
    That is at most four searches for two languages. No matches means the
    fetched reviews are silent on the point: that is the finding. Write it down
    and move to the next step.
 3. HIRE and INVESTIGATE: `maps reviews integrity RUN` (covers every place with
    fetched reviews) and `maps reviews contributors RUN` (reviewers shared
    between places).
+4. GEMS and EXPLORE, only when the owner has enabled Apify: follow reviewers
+   who rated the best finds highly to the other places they rated,
+   `maps reviews contributors RUN --liked PLACE_ID --expand 5`. It looks up
+   individual reviewers through a scraper, so use it on a few contributors.
 
 **Counterevidence** is the point: for every place you intend to recommend, you
 have looked for a reason to drop it.

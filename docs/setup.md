@@ -60,7 +60,23 @@ Both are off until their credentials are set.
 
 Both are scrapers of Google Maps, not licensed Google access. Read `docs/permissions.md` and decide deliberately before enabling either.
 
-## 5. State and retention
+## 5. Optional features
+
+- Semantic review search (`maps reviews search --mode hybrid`): install with
+
+```bash
+uv sync --extra semantic
+```
+
+  The first use downloads a multilingual model of about 220 MB from
+  huggingface.co, so that host must be reachable. The model then runs locally.
+- Meaning-based discovery (`maps discover`): uses the same Google key. Enable
+  "Maps Grounding Lite API" (Google's agent tools) on the same project.
+- MCP server: see `docs/mcp.md`.
+
+`uv run maps doctor` shows which of these are installed.
+
+## 6. State and retention
 
 Search results are stored outside the repo, in `MAPS_STATE_DIR` (default `~/.maps-research`). Runs older than `MAPS_RETENTION_DAYS` (default 30) are deleted at the start of every search. To delete everything now:
 
@@ -70,7 +86,7 @@ uv run maps purge --all
 
 In an ephemeral cloud container the state directory disappears with the container. Runs and the usage ledger then reset, so the ledger undercounts across sessions. This is another reason the Google quota cap in section 2 matters.
 
-## 6. First live run checklist
+## 7. First live run checklist
 
 1. Check the key is seen:
 

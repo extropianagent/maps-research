@@ -38,7 +38,11 @@ that could not be opened from the build environment.
 - **Reports keep attribution.** Review output carries the author name, the
   review link and the reporting link, and place output carries the Google Maps
   link.
-- **No model training.** Nothing here trains or fine-tunes a model.
+- **No model training.** Nothing here trains or fine-tunes a model. Semantic
+  review search uses a local embedding model, so review text is not sent to
+  any outside service; its vectors are cached inside the run and expire with it.
+- **Agent-tools output keeps its links.** `maps discover` prints Google's
+  place notes with their Google Maps links and does not store the notes.
 
 ## Open questions, to settle before relying on a feature
 
@@ -53,6 +57,12 @@ that could not be opened from the build environment.
    their own terms and you carry it under yours. They are off by default, need
    their own credentials, and DataForSEO additionally needs `--cost quality`.
    Decide deliberately whether to enable them.
-3. **Review text search.** Google returns at most five reviews per place and no
+3. **Contributor lookup.** `maps reviews contributors --expand` fetches the
+   public review history of individual reviewers through an Apify actor. That
+   is personal data about named people as well as scraping. It is off unless
+   `APIFY_TOKEN` is set and the flag is given. Use it on the few contributors a
+   search of your own surfaced, keep the results inside the expiring run, and
+   never copy a reviewer's name or history into `knowledge/`.
+4. **Review text search.** Google returns at most five reviews per place and no
    full-text review search. `maps reviews search` therefore covers only the
    reviews fetched into the current run. It cannot claim citywide completeness.

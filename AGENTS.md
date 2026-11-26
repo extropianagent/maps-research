@@ -27,6 +27,11 @@ state what the command does and what it costs.
 - **Secrets stay out of files.** Credentials come from the environment
   (`docs/setup.md`). `.env*` is unreadable here on purpose.
 
+## Clients without a shell
+
+`maps/mcp_server.py` exposes the same commands as MCP tools. Read `docs/mcp.md`
+before running or deploying it.
+
 ## Changing the code
 
 - Failing test first, then the code. `make check` (lint + tests) must pass
