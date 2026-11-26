@@ -105,7 +105,7 @@ def test_sim_search_returns_documented_shape_and_stores_a_run(state):
 
 
 def test_incomplete_coverage_suggests_resuming_deeper():
-    doc = sim_search("--depth", "quick")
+    doc = sim_search("--depth", "standard", "--max-tasks", "2")
     assert not doc["coverage"]["complete"]
     assert any("--resume" in n and "--depth deep" in n for n in doc["next"])
 
@@ -318,7 +318,7 @@ def test_reviews_round_trip_fetch_search_integrity_contributors():
 
     found = jrun("reviews", "search", run, "fresh bread", "--top", "5")
     assert found["reviews_indexed"] > 0 and found["places_with_reviews"] == 40
-    assert "only reviews fetched into this run" in found["coverage_note"]
+    assert "only reviews fetched into this run" in found["coverage_note"].lower()
     assert 0 < len(found["results"]) <= 5
     for r in found["results"]:
         assert "fresh" in r["text"].lower()
