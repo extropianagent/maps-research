@@ -64,6 +64,10 @@ things. A missing record is a refusal, never a warning.
 
 ## Spending protection
 
+> **Status, 2026-11-26:** an independent review found ways past this gateway.
+> Fixes are in progress. Do not make a chargeable request until this notice is
+> removed.
+
 Runaway cost is a separate risk from account enforcement, and it gets its own
 gate. Every request to every provider, including later pages, retries and
 follow-up detail calls, passes through one gateway (`maps/budget.py`) that
