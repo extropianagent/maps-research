@@ -22,7 +22,7 @@ Nothing recorded yet. Example of the shape:
 
 ```markdown
 ### Bakeries
-- 2027-01-10: "I care about bread, not cakes." Prefer places whose reviews
+- YYYY-MM-DD: "I care about bread, not cakes." Prefer places whose reviews
   mention sourdough, crust, baguette over patisserie-led places.
 ```
 

@@ -100,7 +100,9 @@ with its reason, or you can say exactly why the reviews cannot settle it.
 ## 6. Report
 
 Copy this template and fill it in. Keep all five bold headings, in this order;
-write "none" under a heading that has nothing.
+write "none" under a heading that has nothing. When the evidence supports no
+recommendation the template still applies: the Answer says so, and Picks lists
+the strongest candidates marked "unverified" with their links.
 
 ```markdown
 **Answer:** <one or two sentences. If the evidence cannot support a
