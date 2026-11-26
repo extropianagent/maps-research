@@ -35,6 +35,9 @@ settings from the owner's words:
 | HIRE | competence they can rely on | `hire` | required, with integrity |
 | INVESTIGATE | whether reviews and reputation hold up | `investigate` | required, with integrity |
 
+The objective decides the evidence step. Ranking can differ: when the owner
+says popularity should not count, rank with `gems` whatever the objective.
+
 **Done when** you can state all five in one line.
 
 ## 2. Keywords
@@ -43,6 +46,8 @@ Write the query list before searching: what locals type, in every language
 businesses there list themselves in. Per language: the plain category word, one
 or two synonyms or trade terms, and the thing itself when it differs from the
 business ("sourdough" beside "bakery"). Pass each as `-q "text:lang"`.
+
+A query that returns nothing is information: keep it in the report's query list.
 
 **Done when** every local language has at least two queries (one at quick depth).
 
@@ -70,15 +75,18 @@ passes have run.
 ## 5. Evidence and counterevidence
 
 A rating is a claim; reviews are the evidence, and Google gives at most five per
-place. Build a **shortlist** three times the size of the answer, then test it:
+place. Build a **shortlist** three times the size of the answer (the answer is
+five places unless the owner says otherwise), then test it:
 
-1. `maps reviews fetch RUN --top <shortlist size>` with the same filters and objective.
-2. Plan the review searches before running any: up to four terms for what the
-   owner cares about and up to four for how it fails, in each language (for a
-   tiler: "level", "grout", "finish" against "cracked", "uneven", "redo", "late").
-   Run each term once: `maps reviews search RUN "term" --by-place`.
-3. HIRE and INVESTIGATE: `maps reviews integrity RUN --top <shortlist size>`,
-   and `maps reviews contributors RUN` to see reviewers shared between places.
+1. `maps reviews fetch RUN --top <shortlist size>` with the same filters and
+   ranking as the search. The places with fetched reviews are now the shortlist.
+2. Plan the review searches before running any. Per language, two word sets:
+   what the owner cares about, and how it fails (for a tiler: "level grout
+   finish" and "cracked uneven redo late"). One command per set, each run once:
+   `maps reviews search RUN "level grout finish" --by-place`.
+3. HIRE and INVESTIGATE: `maps reviews integrity RUN` (covers every place with
+   fetched reviews) and `maps reviews contributors RUN` (reviewers shared
+   between places).
 
 **Counterevidence** is the point: for every place you intend to recommend, you
 have looked for a reason to drop it.
