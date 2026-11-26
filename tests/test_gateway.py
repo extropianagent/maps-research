@@ -76,7 +76,12 @@ def test_an_unparsable_store_blocks_every_chargeable_request(spending_enabled, u
 
 @pytest.mark.parametrize(
     "content",
-    ['[]', '{"months": []}', '{"months": {"2026-11": {"google.aggregate": {"units": "x", "usd": 0}}}}', '{"months": {}}'],
+    [
+        "[]",
+        '{"months": []}',
+        '{"months": {"2026-11": {"google.aggregate": {"units": "x", "usd": 0}}}}',
+        '{"months": {}}',
+    ],
 )
 def test_a_malformed_store_blocks(spending_enabled, usage, content):
     usage.write_text(content)
@@ -236,7 +241,9 @@ def test_billing_none_still_obeys_every_ceiling(grant_spend):
 def test_billing_enabled_prices_older_than_90_days_block(grant_spend):
     old = (date.today() - timedelta(days=91)).isoformat()
     grant_spend("google", prices_checked_on=old)
-    with pytest.raises(BudgetExceeded, match="prices not confirmed within 90 days: unknown price means block"):
+    with pytest.raises(
+        BudgetExceeded, match="prices not confirmed within 90 days: unknown price means block"
+    ):
         Budget(Ledger(":memory:")).charge("google.text_search.pro")
 
 
@@ -327,14 +334,29 @@ def test_the_period_cap_counts_the_billing_month_only(grant_spend, usage, monkey
 
 def test_an_incomplete_spend_record_blocks(policy_dir):
     (policy_dir / "approvals.json").write_text(
-        json.dumps([{"subject": "google", "kind": "spend", "owner_statement": "ok", "details": {"billing": "enabled"}}])
+        json.dumps(
+            [
+                {
+                    "subject": "google",
+                    "kind": "spend",
+                    "owner_statement": "ok",
+                    "details": {"billing": "enabled"},
+                }
+            ]
+        )
     )
     with pytest.raises(BudgetExceeded, match="incomplete"):
         Budget(Ledger(":memory:")).charge("google.aggregate")
 
 
 def test_approve_spend_validation():
-    ok = {"billing": "enabled", "per_search_cap_usd": 1, "period_cap_usd": 5, "prices_checked_on": "2026-11-01", "prices_source": "page"}
+    ok = {
+        "billing": "enabled",
+        "per_search_cap_usd": 1,
+        "period_cap_usd": 5,
+        "prices_checked_on": "2026-11-01",
+        "prices_source": "page",
+    }
     with pytest.raises(policy.PolicyViolation, match="spending"):
         policy.approve("sim", "spend", owner_statement="x", details={"billing": "none"})
     with pytest.raises(policy.PolicyViolation, match="billing"):
@@ -347,12 +369,16 @@ def test_approve_spend_validation():
         with pytest.raises(policy.PolicyViolation, match="per_search_cap_usd"):
             policy.approve("google", "spend", owner_statement="x", details={**ok, "per_search_cap_usd": bad})
     with pytest.raises(policy.PolicyViolation, match="prices_checked_on"):
-        policy.approve("google", "spend", owner_statement="x", details={**ok, "prices_checked_on": "yesterday"})
+        policy.approve(
+            "google", "spend", owner_statement="x", details={**ok, "prices_checked_on": "yesterday"}
+        )
     with pytest.raises(policy.PolicyViolation, match="prices_source"):
         policy.approve("google", "spend", owner_statement="x", details={**ok, "prices_source": "  "})
     rec = policy.approve("google", "spend", owner_statement="x", details=ok)
     assert rec["details"] == ok
-    none = policy.approve("apify", "spend", owner_statement="x", details={"billing": "none", "period_cap_usd": 9})
+    none = policy.approve(
+        "apify", "spend", owner_statement="x", details={"billing": "none", "period_cap_usd": 9}
+    )
     assert none["details"] == {"billing": "none"}
     assert policy.spend_record("apify")["details"] == {"billing": "none"}
 
@@ -434,7 +460,9 @@ def test_the_ceilings_do_not_apply_to_sim():
 
 def test_fingerprint_is_a_short_hash_without_secrets():
     fp = Budget.fingerprint("POST", "https://x.example/a", {"q": "bakery", "pageToken": "t1"})
-    assert len(fp) <= 16 and fp == Budget.fingerprint("POST", "https://x.example/a", {"pageToken": "t1", "q": "bakery"})
+    assert len(fp) <= 16 and fp == Budget.fingerprint(
+        "POST", "https://x.example/a", {"pageToken": "t1", "q": "bakery"}
+    )
     assert fp != Budget.fingerprint("POST", "https://x.example/a", {"q": "bakery", "pageToken": "t2"})
     assert fp != Budget.fingerprint("GET", "https://x.example/a", {"q": "bakery", "pageToken": "t1"})
     assert "bakery" not in fp and "x.example" not in fp
@@ -522,7 +550,9 @@ def test_ceiling_stops_a_discovery_run_and_is_reported_in_coverage(grant_spend):
 
 def test_a_retry_is_charged_again(grant_spend):
     grant_spend("google", "none")
-    replies = iter([httpx.Response(503, json={"error": {"message": "x"}}), httpx.Response(200, json={"places": []})])
+    replies = iter(
+        [httpx.Response(503, json={"error": {"message": "x"}}), httpx.Response(200, json={"places": []})]
+    )
     sent: list[httpx.Request] = []
 
     def handler(req):
@@ -608,10 +638,16 @@ def _every_provider_with_a_counting_transport(budget):
     q = Query("bakery", "en")
     calls = {
         "google": lambda: google(handler, budget).text_search(q, bbox=BOX),
-        "google_aggregate": lambda: PlacesAggregate(budget, api_key="k", client=client()).count(BOX, types=["bakery"]),
-        "google_agent_tools": lambda: MapsAgentTools(budget, api_key="k", client=client()).search_places("bakery"),
+        "google_aggregate": lambda: PlacesAggregate(budget, api_key="k", client=client()).count(
+            BOX, types=["bakery"]
+        ),
+        "google_agent_tools": lambda: MapsAgentTools(budget, api_key="k", client=client()).search_places(
+            "bakery"
+        ),
         "gemini_maps": lambda: GeminiMaps(budget, api_key="k", client=client()).search_places("bakery"),
-        "apify": lambda: ApifyProvider(budget, token="t", client=client()).text_search(q, bbox=BOX, max_results=3),
+        "apify": lambda: ApifyProvider(budget, token="t", client=client()).text_search(
+            q, bbox=BOX, max_results=3
+        ),
         "dataforseo": lambda: DataForSEOProvider(
             budget, login="l", password="p", client=client(), sleep=lambda s: None
         ).text_search(q, bbox=BOX),
@@ -622,7 +658,7 @@ def _every_provider_with_a_counting_transport(budget):
 def test_with_the_kill_switch_on_no_provider_sends_anything(spending_none):
     policy.kill("stop everything")
     calls, sent = _every_provider_with_a_counting_transport(Budget(Ledger(":memory:")))
-    for name, call in calls.items():
+    for call in calls.values():
         with pytest.raises(BudgetExceeded, match="kill switch is on"):
             call()
     assert sent == []
@@ -639,7 +675,9 @@ def test_after_resume_a_request_goes_out_again(spending_none):
     assert len(sent) == 1
 
 
-@pytest.mark.parametrize("name", ["google", "google_aggregate", "google_agent_tools", "gemini_maps", "apify", "dataforseo"])
+@pytest.mark.parametrize(
+    "name", ["google", "google_aggregate", "google_agent_tools", "gemini_maps", "apify", "dataforseo"]
+)
 def test_with_no_spend_record_no_request_leaves_the_process(name):
     calls, sent = _every_provider_with_a_counting_transport(Budget(Ledger(":memory:")))
     with pytest.raises(BudgetExceeded, match="no spending authorization recorded"):

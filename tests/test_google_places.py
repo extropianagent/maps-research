@@ -13,6 +13,9 @@ from maps.models import Query
 from maps.providers.base import Provider, ProviderError, QuotaExceeded
 from maps.providers.google_places import GooglePlaces
 
+pytestmark = pytest.mark.usefixtures("spending_enabled")
+
+
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
 KEY = "SECRET-KEY-123"
 
@@ -75,11 +78,11 @@ class FailingBudget(Budget):
         self.allow = allow
         self.charged: list[str] = []
 
-    def charge(self, sku_name, units=1):
+    def charge(self, sku_name, units=1, fingerprint=None):
         if len(self.charged) >= self.allow:
             raise BudgetExceeded("nope")
         self.charged.append(sku_name)
-        return super().charge(sku_name, units)
+        return super().charge(sku_name, units, fingerprint)
 
 
 # -- basics ---------------------------------------------------------------------------------
@@ -366,7 +369,7 @@ def test_missing_key_is_provider_error(monkeypatch):
 
 
 @pytest.mark.parametrize("status", [429, 503])
-def test_retry_once_single_charge(status):
+def test_retry_once_is_charged_again(status):
     n = {"i": 0}
 
     def handler(req):
@@ -379,7 +382,7 @@ def test_retry_once_single_charge(status):
     page = p.text_search(Query("x"), bbox=None)
     assert len(page.places) == 1 and n["i"] == 2
     assert p.sleeps == [2]  # type: ignore[attr-defined]
-    assert budget.run_units == {"google.text_search.enterprise": 1}
+    assert budget.run_units == {"google.text_search.enterprise": 2}  # the retry is a request: charged again
 
 
 def test_retry_gives_up_after_one():

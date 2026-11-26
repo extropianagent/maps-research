@@ -15,6 +15,9 @@ from maps.models import Query
 from maps.providers.base import Provider, ProviderError, QuotaExceeded, SearchPage
 from maps.providers.gemini_maps import DEFAULT_MODEL, PROMPT_TEMPLATE, GeminiMaps
 
+pytestmark = pytest.mark.usefixtures("spending_none")
+
+
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "gemini_generate_content_v1beta.json").read_text())
 SCHEMAS: dict[str, Any] = FIXTURE["schemas"]
 KEY = "SECRET-KEY-123"
@@ -216,7 +219,10 @@ def test_hits():
 # -- budget -----------------------------------------------------------------------------------
 
 
-def test_free_mode_refuses_before_any_request():
+def test_free_mode_refuses_before_any_request(grant_spend):
+    grant_spend(
+        "gemini", "enabled"
+    )  # prices are checked, and this SKU's price is unconfirmed: unknown means block
     s = Server()
     p, budget = make(s, budget=Budget(Ledger(":memory:")))
     with pytest.raises(BudgetExceeded):
@@ -229,9 +235,9 @@ def test_quality_mode_charges_once_before_the_request():
     s = Server()
 
     class Spy(Budget):
-        def charge(self, sku_name, units=1):
+        def charge(self, sku_name, units=1, fingerprint=None):
             order.append(f"charge:{sku_name}:{len(s.requests)}")
-            return super().charge(sku_name, units)
+            return super().charge(sku_name, units, fingerprint)
 
     p, budget = make(s, budget=Spy(Ledger(":memory:"), mode="quality", max_usd=1.0))
     p.search_places("x")

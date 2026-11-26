@@ -1,4 +1,5 @@
 import httpx
+import pytest
 
 from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.geography import BBox
@@ -8,6 +9,9 @@ from maps.providers.google_places import GooglePlaces
 from maps.retrieval import DEPTHS, Depth, discover
 from maps.sim import SimProvider
 from maps.store import RunStore
+
+pytestmark = pytest.mark.usefixtures("spending_none")
+
 
 AREA = BBox(24.5, 46.5, 24.9, 46.9)
 
@@ -165,11 +169,11 @@ def test_free_allowance_running_out_on_page_2_is_not_complete():
     class Refuse2(Budget):
         n = 0
 
-        def charge(self, sku_name, units=1):
+        def charge(self, sku_name, units=1, fingerprint=None):
             self.n += 1
             if self.n > 1:
                 raise BudgetExceeded("free allowance exhausted")
-            return super().charge(sku_name, units)
+            return super().charge(sku_name, units, fingerprint)
 
     def handler(req):
         return httpx.Response(

@@ -15,6 +15,9 @@ from maps.models import Query
 from maps.providers.base import Provider, ProviderError, QuotaExceeded, SearchPage
 from maps.providers.google_agent_tools import DEFAULT_ENDPOINT, AgentSearchResult, MapsAgentTools
 
+pytestmark = pytest.mark.usefixtures("spending_none")
+
+
 FIXTURE = Path(__file__).parent / "fixtures" / "google_agent_tools_tools_list.json"
 KEY = "SECRET-KEY-123"
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
@@ -450,9 +453,9 @@ def test_charged_once_per_search_not_for_handshake():
     s = Server(call_result=structured({"id": PID1}))
 
     class Spy(Budget):
-        def charge(self, sku_name, units=1):
+        def charge(self, sku_name, units=1, fingerprint=None):
             charges.append((sku_name, list(s.methods())))
-            return super().charge(sku_name, units)
+            return super().charge(sku_name, units, fingerprint)
 
     p, _ = make(s, budget=Spy(Ledger(":memory:")))
     p.search_places("x")
@@ -463,7 +466,7 @@ def test_charged_once_per_search_not_for_handshake():
 
 def test_budget_refusal_prevents_the_call():
     class Refuse(Budget):
-        def charge(self, sku_name, units=1):
+        def charge(self, sku_name, units=1, fingerprint=None):
             raise BudgetExceeded("nope")
 
     s = Server()

@@ -13,6 +13,9 @@ from maps.models import Query
 from maps.providers.apify import ApifyProvider, parse_contributor
 from maps.providers.base import Provider, ProviderError, QuotaExceeded
 
+pytestmark = pytest.mark.usefixtures("spending_none")
+
+
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
 
 
@@ -154,7 +157,8 @@ def test_free_mode_within_credit_works():
     assert budget.run_usd == 0
 
 
-def test_free_mode_refuses_beyond_credit_before_http():
+def test_free_mode_refuses_beyond_credit_before_http(grant_spend):
+    grant_spend("apify", "enabled")
     calls = []
     p, _ = make(lambda r: calls.append(r) or httpx.Response(201, json=[]), mode="free")
     with pytest.raises(BudgetExceeded):
@@ -282,11 +286,11 @@ def test_contributor_budget_charged_before_request():
     assert units_at_request == {"apify.contributor": 12}
 
 
-def test_contributor_free_mode_refuses_when_credit_used_up():
+def test_contributor_lookup_is_blocked_while_billing_is_enabled_and_its_price_unknown(grant_spend):
+    grant_spend("apify", "enabled")
     calls: list = []
     p, budget = make(lambda r: calls.append(r) or httpx.Response(201, json=[]), mode="free")
-    budget.ledger.add("apify.contributor", 4500, 4.5)  # 90% of the $5 monthly credit
-    with pytest.raises(BudgetExceeded):
+    with pytest.raises(BudgetExceeded, match="unknown price means block"):
         p.contributor_reviews(CID, limit=10)
     assert calls == []
 

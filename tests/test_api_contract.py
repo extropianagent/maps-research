@@ -24,6 +24,9 @@ from maps.models import Query
 from maps.providers.google_aggregate import PlacesAggregate
 from maps.providers.google_places import TIER_FIELDS, GooglePlaces
 
+pytestmark = pytest.mark.usefixtures("spending_none")
+
+
 FIXTURES = Path(__file__).parent / "fixtures"
 PLACES = json.loads((FIXTURES / "places_discovery_v1.json").read_text())
 AREA = json.loads((FIXTURES / "areainsights_discovery_v1.json").read_text())

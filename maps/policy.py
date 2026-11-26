@@ -305,6 +305,92 @@ def clear_stop(provider: str, *, owner_statement: str) -> int:
     return n
 
 
+# --- spending subjects and the kill switch ----------------------------------------------------
+
+_SKU_PREFIX_SUBJECT = {"google": "google", "apify": "apify", "dataforseo": "dataforseo", "sim": None}
+_PROVIDER_SUBJECT = {
+    "google": "google",
+    "google_aggregate": "google",
+    "google_agent_tools": "google",
+    "gemini_maps": "gemini",
+    "apify": "apify",
+    "apify_contributor": "apify",
+    "dataforseo": "dataforseo",
+    "sim": None,
+}
+GEMINI_SKU = "google.gemini_maps_grounding"
+
+
+def spend_subject(provider_or_sku: str) -> str | None:
+    """Who is billed for a provider or a SKU: google, gemini, apify or dataforseo. None for the simulator."""
+    name = provider_or_sku
+    if "." in name:
+        if name == GEMINI_SKU:
+            return "gemini"
+        prefix = name.split(".", 1)[0]
+        if prefix in _SKU_PREFIX_SUBJECT:
+            return _SKU_PREFIX_SUBJECT[prefix]
+    elif name in _PROVIDER_SUBJECT:
+        return _PROVIDER_SUBJECT[name]
+    raise PolicyViolation(f"{name!r} has no billing subject; register it in maps/policy.py first")
+
+
+def spend_record(subject: str) -> dict[str, Any] | None:
+    """The owner's complete spending authorization for a billing subject, or None."""
+    return approved(subject, "spend")
+
+
+def spend_records() -> list[dict[str, Any]]:
+    return [r for r in approvals() if r["kind"] == "spend"]
+
+
+def spend_refusal(subject: str) -> str:
+    """Why nothing chargeable may run for `subject` without a record, with the command that records it."""
+    cmd = (
+        f'maps policy approve {subject} --kind spend --owner-statement "<owner\'s words>" '
+        "--billing none|enabled [--per-search-cap-usd N --period-cap-usd N --prices-checked-on YYYY-MM-DD "
+        '--prices-source "<where the prices were read>"]'
+    )
+    if _incomplete(subject, "spend"):
+        return (
+            f"the spending authorization for {subject} in policy/approvals.json is incomplete; it authorizes "
+            f"nothing. The owner records it again: {cmd}"
+        )
+    return f"no spending authorization recorded for {subject}. The owner records it: {cmd}"
+
+
+def kill_status() -> dict[str, Any]:
+    """Whether the kill switch is on. A KILL.json that cannot be read counts as on."""
+    path = config.policy_dir() / KILL_FILE
+    if not path.exists():
+        return {"on": False, "reason": None, "since": None}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        reason = str(data["reason"]).strip() or "no reason given"
+        return {"on": True, "reason": reason, "since": data.get("killed_at")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"on": True, "reason": f"{path} exists but is unreadable", "since": None}
+
+
+def kill(reason: str) -> dict[str, Any]:
+    """Stop every non-simulator request at once. Anyone may do this; it needs no owner statement."""
+    if not (reason or "").strip():
+        raise PolicyViolation("the kill switch needs a reason (--reason)")
+    doc = {"reason": reason.strip(), "killed_at": datetime.now().isoformat(timespec="seconds")}
+    _write(KILL_FILE, doc)
+    return doc
+
+
+def resume(*, owner_statement: str) -> bool:
+    """Lift the kill switch. The OWNER's decision: needs their own statement. False when it was not on."""
+    if not (owner_statement or "").strip():
+        raise PolicyViolation("lifting the kill switch needs the owner's own statement (owner_statement)")
+    path = config.policy_dir() / KILL_FILE
+    existed = path.exists()
+    path.unlink(missing_ok=True)
+    return existed
+
+
 def _family(name: str) -> set[str]:
     return next((f for f in FAMILIES if name in f), {name})
 
@@ -318,6 +404,13 @@ def require_provider(name: str) -> None:
             f"{name!r} is not a registered provider; new integrations are verified and registered "
             "in maps/policy.py first"
         )
+    if name != "sim":
+        kill_state = kill_status()
+        if kill_state["on"]:
+            raise PolicyViolation(
+                f"kill switch is on: {kill_state['reason']}. No request to any real provider is made until "
+                'the owner lifts it: maps policy resume --owner-statement "<owner\'s words>"'
+            )
     if name in CONDITIONAL and approved(name, "provider") is None:
         if _incomplete(name, "provider"):
             raise PolicyViolation(
@@ -341,6 +434,20 @@ def require_provider(name: str) -> None:
                 "Tell the owner; only the owner may release it with: maps policy clear-stop "
                 f'{s["provider"]} --owner-statement "<owner\'s words>"'
             )
+    if name in SERVICE_USE_PROVIDERS and approved(name, "service_use") is None:
+        how = (
+            f'maps policy approve {name} --kind service_use --owner-statement "<owner\'s words>" '
+            '--terms-checked "<what the owner checked about using this service for this purpose>"'
+        )
+        if _incomplete(name, "service_use"):
+            raise PolicyViolation(
+                f"the service-use record for {name} in policy/approvals.json is incomplete; it approves "
+                f"nothing. Record it again: {how}"
+            )
+        raise PolicyViolation(
+            f"{name} is a Google service and is blocked until the owner records that they checked its "
+            f"terms for this use: {how}"
+        )
 
 
 def require_ai_host() -> str:
@@ -365,6 +472,26 @@ def require_ai_host() -> str:
             'words>" --data-handling "<what the host\'s settings say>"'
         )
     return host
+
+
+def require_feature(name: str) -> None:
+    """A feature that stays off until the owner records the right to use it."""
+    if name not in FEATURES:
+        raise PolicyViolation(f"{name!r} is not a gated feature")
+    if approved(name, "feature") is None:
+        how = (
+            f'maps policy approve {name} --kind feature --owner-statement "<owner\'s words>" '
+            '--rights "<what gives the owner the right to do this>"'
+        )
+        if _incomplete(name, "feature"):
+            raise PolicyViolation(
+                f"the record for the {name} feature in policy/approvals.json is incomplete; it approves "
+                f"nothing. Record it again: {how}"
+            )
+        raise PolicyViolation(
+            f"{name.replace('_', ' ')} is off until the owner approves it (it compares individual "
+            f"reviewers across places): {how}"
+        )
 
 
 _BAD_KEY_TOKENS = frozenset(
@@ -613,6 +740,31 @@ def state_dir_check(state_dir: Path | str) -> None:
         )
 
 
+def provider_status(name: str) -> dict[str, Any]:
+    """Class, whether its approval is recorded, and whether its billing subject has a spend record."""
+    cls = "conditional" if name in CONDITIONAL else "core"
+    if name == "sim":
+        return {
+            "class": cls,
+            "approval": None,
+            "approved": True,
+            "spend_subject": None,
+            "spend_recorded": True,
+        }
+    kind = "provider" if name in CONDITIONAL else "service_use"
+    try:
+        subject = spend_subject(name)
+    except PolicyViolation:
+        subject = None
+    return {
+        "class": cls,
+        "approval": kind,
+        "approved": approved(name, kind) is not None,
+        "spend_subject": subject,
+        "spend_recorded": bool(subject and spend_record(subject)),
+    }
+
+
 def status() -> dict[str, Any]:
     state = config.state_dir()
     try:
@@ -623,11 +775,15 @@ def status() -> dict[str, Any]:
     host = (os.environ.get("MAPS_AI_HOST") or "").strip() or None
     return {
         "registry": {"core": sorted(CORE), "conditional": sorted(CONDITIONAL)},
+        "providers": {n: provider_status(n) for n in sorted(CORE | CONDITIONAL)},
         "excluded_methods": list(EXCLUDED_METHODS),
         "approvals": approvals(),
         "invalid_approvals": invalid_approvals(),
         "open_stops": open_stops(),
         "invalid_stops": invalid_stops(),
+        "kill_switch": kill_status(),
+        "spend_records": spend_records(),
+        "features": {f: {"approved": approved(f, "feature") is not None} for f in FEATURES},
         "proxy": proxy_status(),
         "policy_dir": {"path": str(config.policy_dir()), "location": config.policy_location()},
         "ai_host": {"env": host, "approved": bool(host and approved(host, "ai_host"))},

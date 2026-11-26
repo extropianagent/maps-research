@@ -98,13 +98,10 @@ class PlacesAggregate:
         rating = {k: v for k, v in (("minRating", min_rating), ("maxRating", max_rating)) if v is not None}
         if rating:
             flt["ratingFilter"] = rating
-        self.budget.charge("google.aggregate")
+        body = {"insights": [insight], "filter": flt}
+        self.budget.charge("google.aggregate", fingerprint=Budget.fingerprint("POST", URL, body))
         try:
-            resp = self._client.post(
-                URL,
-                json={"insights": [insight], "filter": flt},
-                headers={"X-Goog-Api-Key": self._key},
-            )
+            resp = self._client.post(URL, json=body, headers={"X-Goog-Api-Key": self._key})
         except httpx.HTTPError as e:
             raise ProviderError(f"google aggregate: request failed ({type(e).__name__})") from None
         detail = ""

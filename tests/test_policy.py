@@ -82,7 +82,7 @@ def test_revoke():
     assert policy.approved("apify", "provider") is None
 
 
-def test_require_provider_rules(approve_provider):
+def test_require_provider_rules(approve_provider, service_use_all):
     for name in policy.CORE:
         policy.require_provider(name)
     with pytest.raises(policy.PolicyViolation, match="not a registered provider.*maps/policy.py"):
@@ -424,7 +424,7 @@ def _bodies_sent_by_providers():
     return seen
 
 
-def test_the_toolkits_own_payloads_pass_the_scan():
+def test_the_toolkits_own_payloads_pass_the_scan(spending_none):
     seen = _bodies_sent_by_providers()
     kinds = {k for k, _ in seen}
     assert kinds == {"apify", "dataforseo"} and len(seen) >= 5

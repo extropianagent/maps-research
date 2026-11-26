@@ -12,6 +12,9 @@ from maps.geography import BBox
 from maps.providers.base import ProviderError, QuotaExceeded
 from maps.providers.google_aggregate import EnumerationResult, PlacesAggregate
 
+pytestmark = pytest.mark.usefixtures("spending_enabled")
+
+
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
 KEY = "SECRET-KEY-123"
 URL = "https://areainsights.googleapis.com/v1:computeInsights"
@@ -255,11 +258,11 @@ def test_budget_stop_returns_partial_with_unresolved():
             super().__init__(Ledger(":memory:"))
             self.allow, self.n = allow, 0
 
-        def charge(self, sku_name, units=1):
+        def charge(self, sku_name, units=1, fingerprint=None):
             if self.n >= self.allow:
                 raise BudgetExceeded("free allowance gone")
             self.n += 1
-            return super().charge(sku_name, units)
+            return super().charge(sku_name, units, fingerprint)
 
     # root count, q0 count, q0 ids, then refused at q1's count
     agg, _ = make(grid(counts, places), budget=Limited(3))
@@ -271,7 +274,7 @@ def test_budget_stop_returns_partial_with_unresolved():
 
 def test_budget_stop_on_root():
     class Never(Budget):
-        def charge(self, sku_name, units=1):
+        def charge(self, sku_name, units=1, fingerprint=None):
             raise BudgetExceeded("no money")
 
     agg, _ = make(grid({}), budget=Never(Ledger(":memory:")))

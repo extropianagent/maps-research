@@ -134,7 +134,6 @@ class DataForSEOProvider:
     def text_search(
         self, query: Query, *, bbox: BBox | None, level: int = 0, max_results: int = 60, **_: Any
     ) -> SearchPage:
-        self.budget.charge("dataforseo.maps_search")
         task: dict[str, Any] = {"keyword": query.text, "depth": max_results}
         if query.language:
             task["language_code"] = query.language
@@ -143,6 +142,10 @@ class DataForSEOProvider:
         if bbox is not None:
             lat, lng = bbox.center
             task["location_coordinate"] = f"{lat:.7f},{lng:.7f},{zoom_for_bbox(bbox)}z"
+        self.budget.charge(
+            "dataforseo.maps_search",
+            fingerprint=Budget.fingerprint("POST", f"{BASE_URL}/serp/google/maps/live/advanced", [task]),
+        )
         data = self._call("POST", "/serp/google/maps/live/advanced", [task])
         result = self._task(data).get("result") or []
         items = (result[0].get("items") if result and isinstance(result[0], dict) else None) or []
@@ -186,7 +189,6 @@ class DataForSEOProvider:
         return SearchPage(places=places, saturated=len(items) >= max_results)
 
     def reviews(self, place_id: str, *, limit: int = 5, language: str | None = None) -> list[Review]:
-        self.budget.charge("dataforseo.reviews", units=math.ceil(limit / 10))
         body: dict[str, Any] = {
             "place_id": place_id,
             "depth": max(10, math.ceil(limit / 10) * 10),
@@ -194,9 +196,13 @@ class DataForSEOProvider:
         }
         if language:
             body["language_code"] = language
-        post = self._task(
-            self._call("POST", "/business_data/google/reviews/task_post", [body]), allow_pending=True
+        path = "/business_data/google/reviews/task_post"
+        self.budget.charge(
+            "dataforseo.reviews",
+            units=math.ceil(limit / 10),
+            fingerprint=Budget.fingerprint("POST", f"{BASE_URL}{path}", [body]),
         )
+        post = self._task(self._call("POST", path, [body]), allow_pending=True)
         task_id = post.get("id")
         if not task_id:
             raise ProviderError("dataforseo: task_post returned no task id")

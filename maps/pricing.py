@@ -50,13 +50,18 @@ SKUS: dict[str, Sku] = {
         price_known=False,
     ),
     "google.gemini_maps_grounding": Sku(
-        "google", 0, 0.025, "Gemini API request grounded with Google Maps (price unconfirmed)",
+        "google",
+        0,
+        0.025,
+        "Gemini API request grounded with Google Maps (price unconfirmed)",
         price_known=False,
     ),
     # --- Apify: unit = one scraped place / one scraped review ---
     "apify.place": Sku("apify", 0, 0.004, "Google Maps scraper, per place"),
     "apify.review": Sku("apify", 0, 0.0005, "Google Maps reviews scraper, per review"),
-    "apify.contributor": Sku("apify", 0, 0.001, "Contributor reviews scraper, per result (unconfirmed)", price_known=False),
+    "apify.contributor": Sku(
+        "apify", 0, 0.001, "Contributor reviews scraper, per result (unconfirmed)", price_known=False
+    ),
     # --- DataForSEO: unit = one task ---
     "dataforseo.maps_search": Sku("dataforseo", 0, 0.002, "Google Maps SERP, live, per task"),
     "dataforseo.reviews": Sku("dataforseo", 0, 0.00075, "Google reviews, per 10 reviews"),

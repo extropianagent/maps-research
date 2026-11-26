@@ -13,6 +13,9 @@ from maps.models import Query
 from maps.providers.base import Provider, ProviderError
 from maps.providers.dataforseo import DataForSEOProvider, zoom_for_bbox
 
+pytestmark = pytest.mark.usefixtures("spending_enabled")
+
+
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
 
 

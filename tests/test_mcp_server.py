@@ -37,6 +37,11 @@ def state(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def recorded(policy_dir, service_use_all, spending_none):
+    """The owner's service-use and spending records, so a real provider is not refused for lack of them."""
+
+
 def with_client(fn):
     async def go():
         async with Client(mcp_server.server) as client:

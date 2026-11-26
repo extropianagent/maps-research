@@ -137,7 +137,7 @@ class GeminiMaps:
             raise ProviderError("gemini_maps: GEMINI_API_KEY is not set")
         policy.check_google_key(self._key)
         body = self._body(text, bbox, language)
-        self.budget.charge(SKU)
+        self.budget.charge(SKU, fingerprint=Budget.fingerprint("POST", self._url(), body))
         doc = self._post(body)
         feedback = doc.get("promptFeedback")
         reason = feedback.get("blockReason") if isinstance(feedback, dict) else None

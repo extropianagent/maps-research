@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from maps import cli
 from maps.budget import BudgetExceeded, Ledger
-from maps.config import ledger_path
+from maps.config import ledger_path, state_dir
 from maps.geography import BBox
 from maps.models import Hit, Place, Review
 from maps.providers.base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
@@ -31,6 +31,20 @@ def state(tmp_path, monkeypatch):
     for name in SECRETS:
         monkeypatch.delenv(name, raising=False)
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def recorded(policy_dir, monkeypatch, spending_none, grant_service_use):
+    """The owner's records the real providers need: Google service use, spending (billing none: the
+    gateway's own rules are tested in test_gateway*.py) and an approved AI host. Tests of default-deny
+    remove what they test."""
+    from maps import policy
+
+    grant_service_use()
+    monkeypatch.setenv("MAPS_AI_HOST", "testhost")
+    policy.approve(
+        "testhost", "ai_host", owner_statement="test owner approves", details={"data_handling": "no training"}
+    )
 
 
 def run_cli(*args, expect=0):
@@ -88,13 +102,18 @@ def test_doctor_shape_and_no_secret_values(monkeypatch):
         "dataforseo",
         "sim",
     }
-    assert doc["providers"]["google_agent_tools"] == {
+
+    # the approval and spend-record state of each provider is covered in test_default_deny.py
+    def basics(name):
+        return {k: doc["providers"][name][k] for k in ("available", "env", "class")}
+
+    assert basics("google_agent_tools") == {
         "available": True,
         "env": ["GOOGLE_MAPS_API_KEY"],
         "class": "core",
     }
-    assert doc["providers"]["google"] == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"], "class": "core"}
-    assert doc["providers"]["gemini_maps"] == {"available": False, "env": ["GEMINI_API_KEY"], "class": "core"}
+    assert basics("google") == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"], "class": "core"}
+    assert basics("gemini_maps") == {"available": False, "env": ["GEMINI_API_KEY"], "class": "core"}
     assert doc["providers"]["dataforseo"]["env"] == ["DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"]
     assert doc["providers"]["sim"]["available"] is True
     for v in SECRETS.values():
@@ -112,7 +131,8 @@ def test_budget_lists_used_and_free_rows_as_valid_json():
     assert "Infinity" not in result.stdout
     doc = json.loads(result.stdout)
     skus = {r["sku"] for r in doc["rows"]}
-    assert "sim.search" in skus and "google.text_search.enterprise" in skus
+    # the simulator is exempt from the gateway and never recorded in the usage store
+    assert "sim.search" not in skus and "google.text_search.enterprise" in skus
     assert "google.text_search.ids" not in skus  # unlimited and unused: nothing to report
     assert "mode" in doc["note"].lower()
 
@@ -631,7 +651,7 @@ def test_resume_with_a_different_tier_is_refused_and_defaults_to_the_runs_tier()
     first = sim_search("--tier", "pro", "--depth", "quick")
     run_cli("search", "--resume", first["run_id"], "--tier", "ids", expect=2)
     assert jrun("search", "--resume", first["run_id"], "--tier", "pro")["run_id"] == first["run_id"]
-    assert RunStore.open(ledger_path().parent, first["run_id"]).spec["tier"] == "pro"
+    assert RunStore.open(state_dir(), first["run_id"]).spec["tier"] == "pro"
     assert jrun("search", "--resume", first["run_id"])["coverage"]["searches_run"] == 0
 
 
@@ -655,7 +675,7 @@ def test_resume_updates_depth_and_adds_providers():
     first = sim_search("--depth", "quick")
     jrun("search", "--resume", first["run_id"], "--depth", "standard")
     assert {r["run_id"]: r for r in jrun("runs")["runs"]}[first["run_id"]]["depth"] == "standard"
-    spec = RunStore.open(ledger_path().parent, first["run_id"]).spec
+    spec = RunStore.open(state_dir(), first["run_id"]).spec
     assert spec["providers"] == ["sim"]
 
 
@@ -1007,7 +1027,7 @@ class FakeContributorProvider:
 
 
 @pytest.fixture
-def contributor_run(state, approve_provider):
+def contributor_run(state, approve_provider, reviewer_matching):
     approve_provider("apify_contributor")
     run_id = sim_search("--depth", "quick")["run_id"]
     store = RunStore.open(state, run_id)
@@ -1154,9 +1174,11 @@ def test_apify_is_refused_until_the_owner_approves_it(monkeypatch, policy_dir):
     monkeypatch.setenv("APIFY_TOKEN", "tok")
     msg = refusal("search", "-q", "bakery", "--bbox", BOX, "--provider", "apify", "--cost", "quality")
     assert "maps policy approve apify --kind provider" in msg
-    assert not (policy_dir / "approvals.json").exists()
+    from maps import policy
+
+    assert policy.approved("apify", "provider") is None
     jrun("policy", "approve", "apify", "--kind", "provider", *APPROVE_ARGS)
-    assert json.loads((policy_dir / "approvals.json").read_text())[0]["subject"] == "apify"
+    assert policy.approved("apify", "provider")["subject"] == "apify"
     fake = FakeSearcher("apify")
     use_searchers(monkeypatch, fake)
     doc = jrun("search", "-q", "bakery", "--bbox", BOX, "--provider", "apify", "--depth", "quick")
@@ -1190,7 +1212,9 @@ def test_approve_with_a_missing_detail_exits_2(policy_dir):
         "y",
         expect=2,
     )
-    assert "downstream_use" in result.stderr and not (policy_dir / "approvals.json").exists()
+    from maps import policy
+
+    assert "downstream_use" in result.stderr and policy.approved("apify", "provider") is None
     run_cli(
         "policy", "approve", "apify", "--kind", "provider", "--data-rights", "x", expect=2
     )  # no statement
@@ -1442,7 +1466,7 @@ def test_policy_status_is_free_and_reports_everything(monkeypatch, approve_provi
     approve_provider("apify")
     monkeypatch.setenv("MAPS_AI_HOST", "claude")
     doc = jrun("policy", "status")
-    assert doc["registry"]["core"] and doc["approvals"][0]["subject"] == "apify"
+    assert doc["registry"]["core"] and "apify" in {a["subject"] for a in doc["approvals"]}
     assert doc["ai_host"] == {"env": "claude", "approved": False}
     assert doc["retention_cap_days"] == 30 and doc["state_dir"]["ok"] and doc["excluded_methods"]
 
@@ -1456,7 +1480,8 @@ def test_doctor_reports_account_protection_and_provider_classes(approve_provider
     approve_provider("apify")
     doc = jrun("doctor")
     assert doc["account_protection"]["registry"]["core"]
-    assert doc["providers"]["google"]["class"] == "core" and "approved" not in doc["providers"]["google"]
+    assert doc["providers"]["google"]["class"] == "core"
+    assert doc["providers"]["google"]["approval"] == "service_use"
     assert (
         doc["providers"]["apify"]["class"] == "conditional" and doc["providers"]["apify"]["approved"] is True
     )
@@ -1515,6 +1540,7 @@ def test_the_provider_gate_requires_the_ai_host_for_grounded_providers(monkeypat
     from maps import policy
     from maps.budget import Budget
 
+    monkeypatch.delenv("MAPS_AI_HOST")
     budget = Budget(Ledger(":memory:"))
     with pytest.raises(policy.PolicyViolation, match="MAPS_AI_HOST"):
         getattr(cli, gate)([name], budget, None, None)
@@ -1529,6 +1555,7 @@ def test_the_gate_holds_even_when_a_test_swaps_the_builder(monkeypatch):
     from maps.budget import Budget
 
     monkeypatch.setattr(cli, "build_providers", lambda *a: ["fake"])
+    monkeypatch.delenv("MAPS_AI_HOST")
     with pytest.raises(policy.PolicyViolation, match="MAPS_AI_HOST"):
         cli._gated(["google_agent_tools"], Budget(Ledger(":memory:")), None, None)
 

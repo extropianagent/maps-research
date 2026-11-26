@@ -106,13 +106,17 @@ class ApifyProvider:
 
     # -- HTTP ---------------------------------------------------------------------------------
 
+    @staticmethod
+    def _url(actor: str) -> str:
+        return f"{BASE_URL}/acts/{actor}/run-sync-get-dataset-items"
+
     def _run(self, payload: dict[str, Any], actor: str = ACTOR) -> list[dict[str, Any]]:
         if actor not in ALLOWED_ACTORS:
             raise ProviderError(f"apify: actor {actor!r} is not in the reviewed allow-list")
         if not self._token:
             raise ProviderError("apify: APIFY_TOKEN is not set")
         policy.check_outbound_payload(self.name, payload)
-        url = f"{BASE_URL}/acts/{actor}/run-sync-get-dataset-items"
+        url = self._url(actor)
         try:
             resp = self._client.post(url, json=payload, headers={"Authorization": f"Bearer {self._token}"})
         except httpx.HTTPError as e:
@@ -138,7 +142,6 @@ class ApifyProvider:
     def text_search(
         self, query: Query, *, bbox: BBox | None, level: int = 0, max_results: int = 60, **_: Any
     ) -> SearchPage:
-        self.budget.charge("apify.place", units=max_results)
         payload: dict[str, Any] = {
             "searchStringsArray": [query.text],
             "maxCrawledPlacesPerSearch": max_results,
@@ -151,6 +154,11 @@ class ApifyProvider:
                 "type": "Polygon",
                 "coordinates": [[[lng, lat] for lat, lng in bbox.polygon()]],
             }
+        self.budget.charge(
+            "apify.place",
+            units=max_results,
+            fingerprint=Budget.fingerprint("POST", self._url(ACTOR), payload),
+        )
         items = self._run(payload)
         places: list[Place] = []
         for item in items:
@@ -190,7 +198,6 @@ class ApifyProvider:
         return SearchPage(places=places, saturated=len(items) >= max_results)
 
     def reviews(self, place_id: str, *, limit: int = 5, language: str | None = None) -> list[Review]:
-        self.budget.charge("apify.review", units=limit)
         payload: dict[str, Any] = {
             "placeIds": [place_id],
             "maxReviews": limit,
@@ -199,6 +206,9 @@ class ApifyProvider:
         }
         if language:
             payload["language"] = language
+        self.budget.charge(
+            "apify.review", units=limit, fingerprint=Budget.fingerprint("POST", self._url(ACTOR), payload)
+        )
         out: list[Review] = []
         for item in self._run(payload):
             if item.get("placeId") not in (None, place_id):
@@ -231,7 +241,11 @@ class ApifyProvider:
             return []
         payload = {"startUrls": [{"url": curl}], "maxItems": limit}
         policy.check_outbound_payload(self.name, payload)
-        self.budget.charge("apify.contributor", units=limit)
+        self.budget.charge(
+            "apify.contributor",
+            units=limit,
+            fingerprint=Budget.fingerprint("POST", self._url(CONTRIBUTOR_ACTOR), payload),
+        )
         places: list[Place] = []
         seen: set[str] = set()
         for item in self._run(payload, CONTRIBUTOR_ACTOR):

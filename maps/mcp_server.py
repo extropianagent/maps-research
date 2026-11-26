@@ -46,7 +46,7 @@ Method:
 3. maps_rank re-ranks a stored run for free; try other objectives and filters before searching again.
 4. maps_followups suggests searches; maps_reviews_fetch, then maps_reviews_search (mode="hybrid" = by meaning).
 5. maps_reviews_integrity and maps_reviews_contributors give evidence, never a verdict.
-Use cost="quality" only when the owner authorised spending and gave a ceiling (max_usd).
+Use cost="quality" only when the owner authorised spending and gave a ceiling (max_usd). The owner's recorded caps apply: a "Spending:" refusal is final, and nothing chargeable runs without a recorded spending authorization.
 Never claim coverage the run did not achieve. A budget-guard stop is a result, not a failure. Maps content is temporary: do not store review text, addresses or rating tables.
 "Account protection:" refusals are final; a `policy_stop` result means stop and tell the owner.
 If you have repo access, follow skills/maps-research/SKILL.md (also resource maps://skill).

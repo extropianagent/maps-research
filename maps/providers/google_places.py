@@ -102,11 +102,15 @@ class GooglePlaces:
         json: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Charge once, send, retry once on a plain 429/503 (never after an enforcement signal)."""
+        """Charge, send, retry once on a plain 429/503 (never after an enforcement signal).
+
+        The retry is a second request: it is charged again, and not sent if the budget refuses it.
+        """
         if not self._key:
             raise ProviderError("google: GOOGLE_MAPS_API_KEY is not set")
         policy.check_google_key(self._key)
-        self.budget.charge(sku)
+        fingerprint = Budget.fingerprint(method, url, {"json": json, "params": params})
+        self.budget.charge(sku, fingerprint=fingerprint)
         headers = {"X-Goog-Api-Key": self._key, "X-Goog-FieldMask": mask}
         resp: httpx.Response | None = None
         detail = ""
@@ -129,6 +133,7 @@ class GooglePlaces:
             if reason:
                 raise PolicyStop(self.name, self._scrub(f"HTTP {resp.status_code}: {detail or reason}"))
             if resp.status_code in (429, 503) and attempt == 0:
+                self.budget.charge(sku, fingerprint=fingerprint)  # the retry is a request too
                 self._sleep(2)
                 continue
             break

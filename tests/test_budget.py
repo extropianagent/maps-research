@@ -4,6 +4,10 @@ from maps import budget as budget_mod
 from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.pricing import SKUS
 
+# The owner's spending authorization (billing enabled, generous caps) is recorded for every subject, so
+# these tests exercise the cost rules themselves. The gateway rules are in test_gateway.py.
+pytestmark = pytest.mark.usefixtures("spending_enabled")
+
 
 @pytest.fixture
 def ledger():
@@ -81,7 +85,7 @@ def test_usage_is_counted_per_billing_month(ledger, monkeypatch):
 
 
 def test_ledger_persists_across_processes(tmp_path):
-    path = tmp_path / "state" / "ledger.sqlite"
+    path = tmp_path / "state" / "usage.json"
     Budget(Ledger(path)).charge("google.aggregate", 3)
     assert Ledger(path).units("google.aggregate") == 3
 

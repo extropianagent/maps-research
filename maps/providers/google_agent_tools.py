@@ -463,9 +463,12 @@ class MapsAgentTools:
     ) -> AgentSearchResult:
         if not self._key:
             raise ProviderError("google_agent_tools: GOOGLE_MAPS_API_KEY is not set")
+        # Refuse before the free setup calls (initialize, tools/list) when the gateway would refuse the search.
+        self.budget.check(SKU)
         args = self._arguments(text, bbox, language, page_size)
-        self.budget.charge(SKU)
-        result = self._rpc("tools/call", {"name": TOOL_NAME, "arguments": args})
+        call = {"name": TOOL_NAME, "arguments": args}
+        self.budget.charge(SKU, fingerprint=Budget.fingerprint("POST", self._endpoint, call))
+        result = self._rpc("tools/call", call)
         if result.get("isError"):
             blocks = [b["text"] for b in result.get("content") or [] if isinstance(b, dict) and b.get("text")]
             detail = " ".join(blocks)

@@ -107,3 +107,9 @@ def reviewer_matching():
         owner_statement="test owner approves",
         details={"rights": "the owner may compare reviewers across places"},
     )
+
+
+@pytest.fixture
+def service_use_all(grant_service_use):
+    """The terms of every core Google provider recorded as checked."""
+    grant_service_use()

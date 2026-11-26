@@ -4,7 +4,8 @@ Conventions, for every command:
 - the result is ONE JSON document on stdout (`--format md` prints markdown where offered);
 - progress and warnings go to stderr, so stdout can always be piped into a JSON parser;
 - user errors exit 2 with a one-line message on stderr; so does an account-protection refusal
-  (the line starts "Account protection:");
+  (the line starts "Account protection:") and a spending-gateway refusal before the first request
+  (the line starts "Spending:");
 - stopping early because of the budget is not an error: exit 0, and the JSON says why;
 - a provider's enforcement signal (suspension, abuse, terms warning) exits 3, and the JSON carries a
   top-level `policy_stop` block.
@@ -28,7 +29,7 @@ from typing import Any
 import click
 
 from . import __version__, config, evals, filters, policy, render, retrieval, scoring, store
-from .budget import Budget, BudgetExceeded, Ledger, current_month
+from .budget import DEPTH_CEILINGS, Budget, BudgetExceeded, GatewayRefusal, Ledger, current_month
 from .geography import BBox
 from .models import Hit, Place, Query
 from .pricing import PRICES_CHECKED, SKUS
@@ -63,7 +64,6 @@ ENV_VARS: dict[str, list[str]] = {
     "sim": [],
 }
 SEARCH_PROVIDERS = ["google", "apify", "dataforseo", "sim"]
-GROUNDED_PROVIDERS = frozenset({"google_agent_tools", "gemini_maps"})  # their output goes to the AI host
 AREA_CACHE_DAYS = 30
 DEFAULT_RADIUS_M = 2000.0
 SIM_WORLD_PLACES = 600
@@ -113,6 +113,9 @@ class MapsGroup(click.Group):
             raise click.exceptions.Exit(3) from e
         except ProviderError as e:
             raise click.ClickException(str(e)) from e
+        except GatewayRefusal as e:
+            click.echo(f"Spending: {e}", err=True)
+            raise click.exceptions.Exit(2) from e
         except BudgetExceeded as e:
             raise CliError(f"budget: {e}") from e
 
@@ -142,16 +145,29 @@ def warn(msg: str) -> None:
 def _open_run(run_id: str) -> RunStore:
     """Open a run for a command that shows or extends its places.
 
-    A run with Google-grounded sightings (agent tools, Gemini) may only be shown to an approved AI host,
-    so it is gated here, once, for every command that uses it.
+    A run with at least one sighting or review from a real provider (anything but the simulator) may
+    only be shown to an approved AI host, so it is gated here, once, for every command that uses it.
     """
     try:
         run = RunStore.open(config.state_dir(), run_id)
     except FileNotFoundError:
         raise CliError("no such run: not a run ID in this state directory (see `maps runs`)") from None
-    if any(h.provider in GROUNDED_PROVIDERS for p in run.places().values() for h in p.hits):
+    if _has_provider_data(run):
         policy.require_ai_host()
     return run
+
+
+def _has_provider_review(run: RunStore) -> bool:
+    """True when the run holds a review that did not come from the simulator."""
+    return any(r.source != "sim" for p in run.places().values() for r in p.reviews)
+
+
+def _has_provider_data(run: RunStore) -> bool:
+    """True when the run holds a sighting or a review that did not come from the simulator."""
+    places = run.places().values()
+    return any(h.provider != "sim" for p in places for h in p.hits) or any(
+        r.source != "sim" for p in places for r in p.reviews
+    )
 
 
 def _touch_spec(run: RunStore, **changes: Any) -> None:
@@ -403,16 +419,38 @@ def format_option(f: Callable) -> Callable:
     )(f)
 
 
-def make_budget(cost: Cost) -> Budget:
-    return Budget(Ledger(config.ledger_path()), mode=cost.mode, max_usd=cost.max_usd or 0.0)
+def make_budget(cost: Cost, providers: list[str] | None = None, depth: str | None = None) -> Budget:
+    """The spending gateway for one command.
+
+    `providers` names who will be used, so the owner's per-search cap is checked against their billing
+    subjects only; `depth` sets the per-run request and time ceilings.
+    """
+    ceilings: dict[str, Any] = {}
+    if depth is not None:
+        ceilings = dict(zip(("max_requests", "max_elapsed_s"), DEPTH_CEILINGS[depth], strict=True))
+    subjects = None
+    if providers is not None:
+        subjects = sorted({s for n in providers if (s := policy.spend_subject(n))})
+    return Budget(
+        Ledger(config.ledger_path()),
+        mode=cost.mode,
+        max_usd=cost.max_usd or 0.0,
+        subjects=subjects,
+        **ceilings,
+    )
+
+
+def _area_users(loc: Location) -> list[str]:
+    """Naming an area by --area costs a Google call, whatever else the command uses."""
+    return ["google"] if loc.area else []
 
 
 # --- providers and locations ------------------------------------------------------------------
 
 
-def _require_ai_host_for_grounded(names: list[str]) -> None:
-    """Grounded Maps output may only reach an approved AI host, whichever path built the provider."""
-    if GROUNDED_PROVIDERS & set(names):
+def _require_ai_host_for_provider_data(names: list[str]) -> None:
+    """Output of any real provider may only reach an approved AI host; only the simulator is exempt."""
+    if any(n != "sim" for n in names):
         policy.require_ai_host()
 
 
@@ -424,15 +462,18 @@ def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BB
     """
     for name in names:
         policy.require_provider(name)
-    _require_ai_host_for_grounded(names)
+    _require_ai_host_for_provider_data(names)
     return _construct_providers(names, budget, tier, bbox)
 
 
 def _gated(names: list[str], budget: Budget, tier: str | None, bbox: BBox | None) -> list[Any]:
-    """Every use of a provider goes through here, so the check holds even when tests swap the builder."""
+    """Every use of a provider goes through here, so the checks hold even when tests swap the builder:
+    the owner's approvals, the AI host, and the spending gateway (refused before the first request)."""
     for name in names:
         policy.require_provider(name)
-    _require_ai_host_for_grounded(names)
+    _require_ai_host_for_provider_data(names)
+    for name in names:
+        budget.preflight(name)
     return build_providers(names, budget, tier, bbox)
 
 
@@ -660,14 +701,20 @@ def main(ctx: click.Context) -> None:
     budget exits 0 and the JSON says why. Each command's --help states what it costs.
 
     Cost modes: --cost free (default) never spends money and stops at 90% of each free monthly
-    allowance; --cost quality --max-usd N authorises paid calls up to N dollars for that command.
+    allowance; --cost quality --max-usd N authorises paid calls up to N dollars for that command, never
+    above the owner's recorded per-search cap. Nothing chargeable runs until the owner has recorded a
+    spending authorization (`maps policy approve SUBJECT --kind spend`); a refusal that starts
+    "Spending:" is final. Every run also has hard ceilings (requests, minutes, repeated requests), and
+    `maps policy kill --reason TEXT` stops every real request at once. `maps budget` shows all of it.
 
     State lives in $MAPS_STATE_DIR (default ~/.maps-research); runs older than $MAPS_RETENTION_DAYS
     (default and maximum 30) are deleted at the start of every command, per the Maps Platform terms.
 
-    Account protection (`maps policy status`): third-party extraction (Apify, DataForSEO) is blocked
-    until the owner approves it, discover needs an approved AI host, and a provider's enforcement
-    signal stops everything (exit 3). A refusal starting "Account protection:" is final: report it.
+    Account protection (`maps policy status`): every real provider is blocked until the owner records
+    an approval (Google's services: their terms checked; Apify, DataForSEO: data rights), nothing a
+    real provider returned reaches an AI that is not an approved AI host, reviewer matching is off until
+    approved, and a provider's enforcement signal stops everything (exit 3). A refusal starting
+    "Account protection:" is final: report it.
     """
     if ctx.invoked_subcommand == "policy":
         return  # `maps policy status` must keep working to explain a refusal
@@ -688,9 +735,9 @@ def main(ctx: click.Context) -> None:
 
 def _provider_info(p: Any) -> dict[str, Any]:
     info: dict[str, Any] = {"available": p.available(), "env": ENV_VARS[p.name]}
-    info["class"] = "conditional" if p.name in policy.CONDITIONAL else "core"
-    if p.name in policy.CONDITIONAL:
-        info["approved"] = policy.approved(p.name, "provider") is not None
+    info.update(
+        policy.provider_status(p.name)
+    )  # class, approval kind, approved, spend subject, spend_recorded
     return info
 
 
@@ -716,33 +763,71 @@ def doctor() -> None:
     )
 
 
-@main.command("budget")
-def budget_cmd() -> None:
-    """This month's usage against free allowances. Free: reads the local ledger only.
+@main.group("budget", invoke_without_command=True)
+@click.pass_context
+def budget_cmd(ctx: click.Context) -> None:
+    """This month's usage against free allowances, the owner's spending caps and the per-run ceilings.
 
-    The ledger only sees requests made through this toolkit; usage elsewhere on the same Google
+    Free: reads the local counters only (`usage.json` in the policy folder). Shows each spend record
+    with its caps, this month's out-of-pocket total per billing subject against its period cap, the
+    request and time ceilings, and the kill-switch state. `maps budget reconcile` brings the counters up
+    to what the provider's own console says.
+
+    The counters only see requests made through this toolkit; usage elsewhere on the same Google
     project is invisible, so keep a quota cap in the provider's console too.
     """
-    rows = Budget(Ledger(config.ledger_path())).month_report()
+    if ctx.invoked_subcommand is not None:
+        return
+    gateway = Budget(Ledger(config.ledger_path()))
+    rows = gateway.month_report()
     shown = [r for r in rows if r["used"] > 0 or (math.isfinite(r["free_units"]) and r["free_units"] > 0)]
     emit(
         {
             "month": current_month(),
             "note": (
                 "Mode note: --cost free refuses anything that would cost money and stops at 90% of each "
-                "free allowance; --cost quality --max-usd N authorises paid calls. Prices checked "
-                f"{PRICES_CHECKED}; they go stale."
+                "free allowance; --cost quality --max-usd N authorizes paid calls within the owner's caps. "
+                f"Prices checked {PRICES_CHECKED}; they go stale, and a spend record's prices must be "
+                "confirmed within 90 days."
             ),
             "rows": shown,
+            **gateway.gateway_report(),
         }
     )
+
+
+@budget_cmd.command("reconcile")
+@click.option("--sku", required=True, metavar="SKU", help="The SKU as `maps budget` lists it.")
+@click.option(
+    "--units",
+    required=True,
+    type=float,
+    metavar="N",
+    help="The units the provider's console shows for this month.",
+)
+@click.option(
+    "--owner-statement", required=True, metavar="TEXT", help="The owner's own words (the source of N)."
+)
+def budget_reconcile(sku: str, units: float, owner_statement: str) -> None:
+    """Raise this month's recorded units for SKU to max(current, N). Free.
+
+    The owner copies N from the provider's console, because usage from outside this toolkit is
+    invisible here. The counter never goes down. An entry (date, sku, units, statement) is appended to
+    the reconciliation log in usage.json. This records the owner's figure, not yours: run it only with
+    the owner's own statement from the current conversation.
+    """
+    try:
+        emit(Budget(Ledger(config.ledger_path())).reconcile(sku, units, owner_statement=owner_statement))
+    except ValueError as e:
+        raise CliError(str(e)) from None
 
 
 @main.command()
 @click.argument("name")
 def area(name: str) -> None:
     """Resolve a place name to a search box. Cost: 1 Google Text Search Pro call, cached 30 days."""
-    budget = Budget(Ledger(config.ledger_path()))
+    policy.require_ai_host()  # even a cached area is Google output that goes to the AI
+    budget = make_budget(Cost("free", None), ["google"])
     bbox, label, cached = resolve_area(name, budget)
     emit({"name": name, "label": label, "bbox": bbox.key(), "cached": cached})
 
@@ -854,7 +939,7 @@ def search(
     tier = tier or spec.get("tier") or "enterprise"
     service_area = service_area or bool(spec.get("service_area_businesses"))
 
-    budget = make_budget(cost)
+    budget = make_budget(cost, [*names, *_area_users(loc)], depth_name)
     bbox, label = resolve_bbox(loc, budget)
     if bbox is None and run and spec.get("bbox"):
         bbox = BBox.parse(spec["bbox"])
@@ -952,7 +1037,7 @@ def census(loc: Location, types: tuple[str, ...], min_rating: float | None, max_
 
     Text Search cannot filter by maximum rating; this can, and counts without paging.
     """
-    budget = Budget(Ledger(config.ledger_path()))
+    budget = make_budget(Cost("free", None), ["google_aggregate", *_area_users(loc)])
     bbox, _ = resolve_bbox(loc, budget)
     if bbox is None:
         raise CliError(NO_LOCATION)
@@ -1001,7 +1086,7 @@ def enumerate_cmd(
     Walks the area in cells (a count and a list call per cell, 100 IDs per list) and stores the IDs
     as ID-only places in a run. Follow with `maps details RUN --missing` to fill in names (billed).
     """
-    budget = make_budget(cost)
+    budget = make_budget(cost, ["google_aggregate", *_area_users(loc)])
     bbox, _ = resolve_bbox(loc, budget)
     if bbox is None:
         raise CliError(NO_LOCATION)
@@ -1091,7 +1176,8 @@ def discover(
     source = DISCOVER_SOURCES[via]
     policy.require_provider(source)
     policy.require_ai_host()  # grounded Maps output goes to the AI host: its data settings must be approved
-    budget = make_budget(cost)
+    budget = make_budget(cost, [source, *_area_users(loc)])
+    budget.preflight(source)
     bbox, label = resolve_bbox(loc, budget)
     tools = build_discoverer(via, budget)
     if not tools.available():
@@ -1186,7 +1272,7 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
         targets = [s.place for s in ranked]
     todo = [p for p in targets if run.done(f"google_details|{p.place_id}|{tier}") is None]
 
-    budget = make_budget(cost)
+    budget = make_budget(cost, ["google"])
     google = _single("google", budget, tier, None)
     fetched, stopped, errors, stop = 0, None, [], None
     for p in todo:
@@ -1261,7 +1347,7 @@ def reviews_fetch(
     ranked = scoring.rank(filters.apply(places.values(), flt), rk.objective)
     todo = [s.place for s in ranked if not s.place.reviews][: rk.top]
 
-    budget = make_budget(cost)
+    budget = make_budget(cost, [provider])
     bbox = BBox.parse(spec["bbox"]) if spec.get("bbox") else None
     prov = _single(provider, budget, spec.get("tier"), bbox)
     done: list[dict[str, Any]] = []
@@ -1531,11 +1617,15 @@ def reviews_contributors(
     run = _open_run(run_id)
     if expand and not liked:
         raise CliError("--expand needs at least one --liked PLACE_ID")
+    if expand or _has_provider_review(run):
+        # Matching individual reviewers across places is off until the owner records the right to do it.
+        policy.require_feature("reviewer_matching")
     extra: dict[str, Any] = {}
     stop = None
     if expand:
         policy.require_provider("apify_contributor")
-        budget = make_budget(cost)
+        budget = make_budget(cost, ["apify_contributor"])
+        budget.preflight("apify_contributor")
         prov = build_contributor_provider(budget)
         if not prov.available():
             raise CliError("--expand needs APIFY_TOKEN (see docs/setup.md)")
@@ -1590,13 +1680,14 @@ def policy_group() -> None:
 
 @policy_group.command("status")
 def policy_status() -> None:
-    """Show the provider registry, excluded methods, approvals, open stops and the AI host. Free."""
+    """Show the provider registry (class, approval, spend record), approvals, open stops, the kill switch,
+    the AI host and gated features. Free."""
     emit(policy.status())
 
 
 @policy_group.command("approve")
 @click.argument("subject")
-@click.option("--kind", type=click.Choice(["provider", "ai_host", "egress_proxy"]), required=True)
+@click.option("--kind", type=click.Choice(list(policy.KINDS)), required=True)
 @click.option(
     "--owner-statement", required=True, metavar="TEXT", help="The owner's own words approving this."
 )
@@ -1607,6 +1698,29 @@ def policy_status() -> None:
 @click.option("--downstream-use", metavar="TEXT", help="provider: what the data is used for afterwards.")
 @click.option("--data-handling", metavar="TEXT", help="ai_host: what its data settings say about training.")
 @click.option("--purpose", metavar="TEXT", help="egress_proxy: why this network proxy is needed.")
+@click.option(
+    "--terms-checked",
+    metavar="TEXT",
+    help="service_use: what the owner checked about using this Google service for this purpose.",
+)
+@click.option("--rights", metavar="TEXT", help="feature: what gives the owner the right to use this feature.")
+@click.option(
+    "--billing",
+    type=click.Choice(["none", "enabled"]),
+    help="spend: none = the credential cannot be charged (e.g. Google's Maps Demo Key); enabled = it can.",
+)
+@click.option(
+    "--per-search-cap-usd", type=float, metavar="N", help="spend, billing enabled: most one run may spend."
+)
+@click.option(
+    "--period-cap-usd", type=float, metavar="N", help="spend, billing enabled: most per billing month."
+)
+@click.option(
+    "--prices-checked-on",
+    metavar="YYYY-MM-DD",
+    help="spend, billing enabled: when the owner last read the provider's prices (blocks after 90 days).",
+)
+@click.option("--prices-source", metavar="TEXT", help="spend, billing enabled: where the prices were read.")
 def policy_approve(
     subject: str,
     kind: str,
@@ -1616,25 +1730,80 @@ def policy_approve(
     downstream_use: str | None,
     data_handling: str | None,
     purpose: str | None,
+    terms_checked: str | None,
+    rights: str | None,
+    billing: str | None,
+    per_search_cap_usd: float | None,
+    period_cap_usd: float | None,
+    prices_checked_on: str | None,
+    prices_source: str | None,
 ) -> None:
-    """Record the OWNER's approval of a conditional provider, an AI host or an egress proxy. Free.
+    """Record the OWNER's approval. Free.
 
     This records the owner's decision, not yours: run it only with the owner's own statement from the
-    current conversation, quoted verbatim in --owner-statement. provider needs --data-rights,
-    --retrieval-method and --downstream-use; ai_host needs --data-handling; egress_proxy (SUBJECT is the
-    proxy's host name, for a legitimate network proxy named in HTTPS_PROXY) needs --purpose.
+    current conversation, quoted verbatim in --owner-statement. Every kind and what it needs:
+
+    \b
+    provider      SUBJECT apify, dataforseo, apify_contributor...; --data-rights, --retrieval-method,
+                  --downstream-use
+    ai_host       SUBJECT the AI host's name; --data-handling
+    egress_proxy  SUBJECT the proxy's host name; --purpose
+    service_use   SUBJECT google, google_aggregate, google_agent_tools or gemini_maps; --terms-checked
+    feature       SUBJECT reviewer_matching; --rights
+    spend         SUBJECT google, gemini, apify or dataforseo; --billing none|enabled and, when
+                  enabled: --per-search-cap-usd, --period-cap-usd, --prices-checked-on,
+                  --prices-source
     """
     if kind == "provider":
-        details = {
+        details: dict[str, Any] = {
             "data_rights": data_rights,
             "retrieval_method": retrieval_method,
             "downstream_use": downstream_use,
         }
     elif kind == "egress_proxy":
         details = {"purpose": purpose}
+    elif kind == "service_use":
+        details = {"terms_checked": terms_checked}
+    elif kind == "feature":
+        details = {"rights": rights}
+    elif kind == "spend":
+        details = {
+            "billing": billing,
+            "per_search_cap_usd": per_search_cap_usd,
+            "period_cap_usd": period_cap_usd,
+            "prices_checked_on": prices_checked_on,
+            "prices_source": prices_source,
+        }
+        if billing != "enabled":
+            details = {"billing": billing}
     else:
         details = {"data_handling": data_handling}
     emit(policy.approve(subject, kind, owner_statement=owner_statement, details=details))
+
+
+@policy_group.command("kill")
+@click.option(
+    "--reason", required=True, metavar="TEXT", help="Why. Shown in every refusal while the switch is on."
+)
+def policy_kill(reason: str) -> None:
+    """Stop every request to a real provider, at once. Free.
+
+    Anyone may run this and it needs no owner statement. While it is on, the spending gateway and the
+    provider check refuse every request except the simulator's. Only the owner lifts it (`maps policy
+    resume`).
+    """
+    emit(policy.kill(reason))
+
+
+@policy_group.command("resume")
+@click.option("--owner-statement", required=True, metavar="TEXT", help="The owner's own words lifting it.")
+def policy_resume(owner_statement: str) -> None:
+    """Lift the kill switch. Free.
+
+    This records the owner's decision, not yours: run it only with the owner's own statement from the
+    current conversation, quoted verbatim in --owner-statement.
+    """
+    emit({"resumed": policy.resume(owner_statement=owner_statement)})
 
 
 @policy_group.command("revoke")

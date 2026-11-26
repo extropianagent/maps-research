@@ -21,6 +21,9 @@ from maps.providers.google_agent_tools import MapsAgentTools
 from maps.providers.google_aggregate import PlacesAggregate
 from maps.providers.google_places import GooglePlaces
 
+pytestmark = pytest.mark.usefixtures("spending_none")
+
+
 BOX = BBox(24.6, 46.6, 24.7, 46.7)
 PID = "ChIJplaceAAAA1"
 TOOLS = json.loads((Path(__file__).parent / "fixtures" / "google_agent_tools_tools_list.json").read_text())
