@@ -13,7 +13,7 @@ SIM_AREA = BBox(24.5, 46.5, 24.9, 46.9)
 
 
 def state_dir() -> Path:
-    """Where runs, the ledger and the area cache live (outside the repo, see docs/permissions.md)."""
+    """Where runs and the area cache live (outside the repo, see docs/permissions.md)."""
     return Path(os.environ.get("MAPS_STATE_DIR") or "~/.maps-research").expanduser()
 
 
@@ -73,4 +73,6 @@ def retention_days() -> float:
 
 
 def ledger_path() -> Path:
-    return state_dir() / "ledger.sqlite"
+    """The usage counters. In the policy folder, not the state directory: the state directory is lost on
+    ephemeral machines and the counters must survive (they hold no Maps content)."""
+    return policy_dir() / "usage.json"

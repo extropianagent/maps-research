@@ -20,6 +20,8 @@ class Sku:
     free_units: float  # free units per month for this SKU (0 = none)
     usd_per_unit: float  # list price per unit beyond the free allowance
     note: str = ""
+    # False when the price is unconfirmed: under `billing: enabled` such a SKU is blocked, never treated as free.
+    price_known: bool = True
 
 
 # Monthly free credit per provider, applied to billable usage after per-SKU free units.
@@ -45,14 +47,16 @@ SKUS: dict[str, Sku] = {
         float("inf"),
         0.0,
         "Maps Experience agent tools search_places (free while Experimental; unconfirmed)",
+        price_known=False,
     ),
     "google.gemini_maps_grounding": Sku(
-        "google", 0, 0.025, "Gemini API request grounded with Google Maps (price unconfirmed)"
+        "google", 0, 0.025, "Gemini API request grounded with Google Maps (price unconfirmed)",
+        price_known=False,
     ),
     # --- Apify: unit = one scraped place / one scraped review ---
     "apify.place": Sku("apify", 0, 0.004, "Google Maps scraper, per place"),
     "apify.review": Sku("apify", 0, 0.0005, "Google Maps reviews scraper, per review"),
-    "apify.contributor": Sku("apify", 0, 0.001, "Contributor reviews scraper, per result (unconfirmed)"),
+    "apify.contributor": Sku("apify", 0, 0.001, "Contributor reviews scraper, per result (unconfirmed)", price_known=False),
     # --- DataForSEO: unit = one task ---
     "dataforseo.maps_search": Sku("dataforseo", 0, 0.002, "Google Maps SERP, live, per task"),
     "dataforseo.reviews": Sku("dataforseo", 0, 0.00075, "Google reviews, per 10 reviews"),

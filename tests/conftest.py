@@ -37,3 +37,73 @@ def ai_host(monkeypatch):
         "testhost", "ai_host", owner_statement="test owner approves", details={"data_handling": "no training"}
     )
     return "testhost"
+
+
+def _spend_details(billing, **kw):
+    from datetime import date
+
+    if billing == "none":
+        return {"billing": "none"}
+    return {
+        "billing": "enabled",
+        "per_search_cap_usd": kw.get("per_search_cap_usd", 1000.0),
+        "period_cap_usd": kw.get("period_cap_usd", 100000.0),
+        "prices_checked_on": kw.get("prices_checked_on", date.today().isoformat()),
+        "prices_source": kw.get("prices_source", "provider price page, read by the test"),
+    }
+
+
+@pytest.fixture
+def grant_spend():
+    """Record the owner's spending authorization for a billing subject (google, gemini, apify, dataforseo)."""
+
+    def go(subject, billing="enabled", **kw):
+        policy.approve(
+            subject,
+            "spend",
+            owner_statement="test owner authorizes spending",
+            details=_spend_details(billing, **kw),
+        )
+
+    return go
+
+
+@pytest.fixture
+def grant_service_use():
+    """Record the owner's check of Google's terms for a core provider."""
+
+    def go(*names):
+        for name in names or ("google", "google_aggregate", "google_agent_tools", "gemini_maps"):
+            policy.approve(
+                name,
+                "service_use",
+                owner_statement="test owner approves",
+                details={"terms_checked": "read the terms for this use"},
+            )
+
+    return go
+
+
+@pytest.fixture
+def spending_enabled(grant_spend):
+    """Billing enabled with generous caps everywhere except Gemini (unconfirmed price: billing none)."""
+    for subject in ("google", "apify", "dataforseo"):
+        grant_spend(subject, "enabled")
+    grant_spend("gemini", "none")
+
+
+@pytest.fixture
+def spending_none(grant_spend):
+    """Every credential declared as one that cannot be charged."""
+    for subject in ("google", "gemini", "apify", "dataforseo"):
+        grant_spend(subject, "none")
+
+
+@pytest.fixture
+def reviewer_matching():
+    policy.approve(
+        "reviewer_matching",
+        "feature",
+        owner_statement="test owner approves",
+        details={"rights": "the owner may compare reviewers across places"},
+    )

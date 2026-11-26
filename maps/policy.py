@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import os
 import re
 import tempfile
@@ -43,11 +44,22 @@ FAMILIES = (
     {"apify", "apify_contributor"},
 )
 PROVIDER_DETAILS = ("data_rights", "retrieval_method", "downstream_use")
+# Core providers that are Google's own services: each needs a recorded check of the terms of use.
+SERVICE_USE_PROVIDERS = ("google", "google_aggregate", "google_agent_tools", "gemini_maps")
+# Who gets billed: one subject per credential. Spending authorization is recorded per subject.
+SPEND_SUBJECTS = ("google", "gemini", "apify", "dataforseo")
+FEATURES = ("reviewer_matching",)  # off until the owner approves them
+PRICE_MAX_AGE_DAYS = 90
 REQUIRED_DETAILS = {
     "provider": PROVIDER_DETAILS,
     "ai_host": ("data_handling",),
     "egress_proxy": ("purpose",),
+    "service_use": ("terms_checked",),
+    "feature": ("rights",),
 }
+SPEND_ENABLED_DETAILS = ("per_search_cap_usd", "period_cap_usd", "prices_checked_on", "prices_source")
+KINDS = (*REQUIRED_DETAILS, "spend")
+KILL_FILE = "KILL.json"
 
 
 class PolicyViolation(RuntimeError):
@@ -70,7 +82,7 @@ def _read(name: str) -> list[dict[str, Any]]:
     return data
 
 
-def _write(name: str, records: list[dict[str, Any]]) -> None:
+def _write(name: str, records: Any) -> None:
     directory = config.policy_dir()
     directory.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{name}.", suffix=".tmp")
@@ -87,11 +99,40 @@ def _write(name: str, records: list[dict[str, Any]]) -> None:
 # --- approvals --------------------------------------------------------------------------------
 
 
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+
+
+def _spend_details_problem(details: Any) -> str | None:
+    """Why spending details are unusable (naming the fields), or None."""
+    if not isinstance(details, dict):
+        return "no details"
+    if details.get("billing") not in ("none", "enabled"):
+        return "billing must be 'none' or 'enabled'"
+    if details["billing"] == "none":
+        return None
+    bad = [k for k in ("per_search_cap_usd", "period_cap_usd") if not _is_number(details.get(k))]
+    day = details.get("prices_checked_on")
+    try:
+        if not isinstance(day, str):
+            raise ValueError
+        date.fromisoformat(day.strip())
+    except ValueError:
+        bad.append("prices_checked_on")
+    source = details.get("prices_source")
+    if not isinstance(source, str) or not source.strip():
+        bad.append("prices_source")
+    if bad:
+        return f"details missing or invalid: {', '.join(bad)} (numbers must be finite and >= 0, dates ISO)"
+    return None
+
+
 def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str, Any]) -> dict[str, Any]:
     """Record the OWNER's decision. Only call this with the owner's own words as `owner_statement`."""
     if not (owner_statement or "").strip():
         raise PolicyViolation("an approval needs the owner's own statement (owner_statement)")
     details = {k: (v.strip() if isinstance(v, str) else v) for k, v in (details or {}).items()}
+    stored: dict[str, Any]
     if kind == "provider":
         if subject not in CONDITIONAL:
             raise PolicyViolation(
@@ -106,17 +147,39 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
         if not (subject or "").strip():
             raise PolicyViolation("an egress proxy approval needs the proxy's host name")
         required = ("purpose",)
+    elif kind == "service_use":
+        if subject not in SERVICE_USE_PROVIDERS:
+            raise PolicyViolation(
+                f"{subject!r} is not a Google service provider (service use applies to: "
+                f"{', '.join(SERVICE_USE_PROVIDERS)})"
+            )
+        required = ("terms_checked",)
+    elif kind == "feature":
+        if subject not in FEATURES:
+            raise PolicyViolation(f"{subject!r} is not a gated feature (features: {', '.join(FEATURES)})")
+        required = ("rights",)
+    elif kind == "spend":
+        if subject not in SPEND_SUBJECTS:
+            raise PolicyViolation(
+                f"{subject!r} is not a billing subject for spending authorization "
+                f"(subjects: {', '.join(SPEND_SUBJECTS)})"
+            )
+        problem = _spend_details_problem(details)
+        if problem:
+            raise PolicyViolation(f"spending authorization for {subject} is invalid: {problem}")
+        required = ("billing",) if details["billing"] == "none" else ("billing", *SPEND_ENABLED_DETAILS)
     else:
-        raise PolicyViolation(f"unknown approval kind {kind!r}; use 'provider', 'ai_host' or 'egress_proxy'")
-    missing = [k for k in required if not details.get(k)]
+        raise PolicyViolation(f"unknown approval kind {kind!r}; use one of: {', '.join(KINDS)}")
+    missing = [k for k in required if details.get(k) in (None, "")]
     if missing:
         raise PolicyViolation(f"approval for {subject} is missing: {', '.join(missing)}")
+    stored = {k: details[k] for k in required}
     record = {
         "subject": subject,
         "kind": kind,
         "approved_on": date.today().isoformat(),
         "owner_statement": owner_statement.strip(),
-        "details": {k: details[k] for k in required},
+        "details": stored,
     }
     kept = [
         r
@@ -143,6 +206,10 @@ def _record_problem(r: Any) -> str | None:
     if not isinstance(r.get("subject"), str) or not r["subject"].strip():
         return "no subject"
     kind = r.get("kind")
+    if kind == "spend":
+        if not isinstance(r.get("owner_statement"), str) or not r["owner_statement"].strip():
+            return "no owner_statement"
+        return _spend_details_problem(r.get("details"))
     required = REQUIRED_DETAILS.get(kind) if isinstance(kind, str) else None
     if required is None:
         return f"unknown kind {r.get('kind')!r}"
