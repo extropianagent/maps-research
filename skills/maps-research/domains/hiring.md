@@ -8,6 +8,10 @@ specific to choosing someone to do work.
   businesses that only travel to customers are included.
 - Query the trade and the job: "tile installer" and "bathroom renovation", the
   material, and the local terms for both.
+- The request may name a presumed solution. When the owner is open to it, break
+  the result they want into the trades that produce it and search each: custom
+  furniture is joinery, upholstery, timber and fittings. Never turn a firm
+  request into a different project, and never advise on what is safe to repair.
 
 ## Filters
 Apply the owner's numbers exactly. When they give none, do not invent a rating

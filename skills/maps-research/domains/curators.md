@@ -26,10 +26,14 @@ site:localguidesconnect.com "<city>" "my list"
 site:localguidesconnect.com "<city>" "maps.app.goo.gl"
 "<city>" "<speciality>" "Google Maps" list
 "<city>" "my favorite" "google.com/maps/placelists"
+"<city>" "<speciality>" "google.com/maps/d/"
 "<المدينة>" "قائمة مطاعم" "قوقل ماب"
 ```
 
-Prefer a personal collection with a stated reason over a generic "top 10".
+The last pattern finds custom maps people published with Google My Maps. Those
+can hold imported outside data, so treat one as a lead until its places are
+checked on Maps. Prefer a personal collection with a stated reason over a
+generic "top 10", and the original list over a copy of it.
 With no web search tool, give the owner the queries.
 
 **Seed lane (when the owner has favourites).** For a few distinctive
@@ -49,14 +53,18 @@ over at most five links, each with the one question to answer on opening it.
 | Same taste as the owner? | Agreement and disagreement on the owner's distinctive favourites and dislikes, with reasons |
 | Finds new things? | Places the ordinary search did not surface, and later the owner's own visits |
 
-No combined score. Unknown is not negative. Review count, Local Guide level,
+Agreement on why matters more than agreement on a place: someone who loves the
+owner's favourite bakery for its prices is not a match for an owner who loves
+its crust. No combined score. Unknown is not negative. Review count, Local Guide level,
 nationality, language and friendship are none of the three. Keep types apart:
 a taste match, a domain specialist, an explorer and a local curator are useful
 for different requests.
 
 **Report for a curator search:** three to eight leads. For each: the public
-link, where it was shared, city and domain, one specific reason it looks
-relevant, what was actually seen and what was not, and the next step. If only a
+link, where it was shared, city and domain, roughly how many places and how
+recently kept up if that is visible, whether it is the author's own, one
+specific reason it looks relevant, what was actually seen and what was not, and
+the next step. If only a
 forum profile exists, call it a lead, not a Maps profile.
 
 ## Job 2: places through trusted curators
@@ -68,7 +76,9 @@ forum profile exists, call it a lead, not a Maps profile.
 3. Drop places already in `knowledge/preferences.md` or
    `knowledge/feedback-log.md`.
 4. Run the evidence step of the master skill on what remains.
-5. Run an ordinary search for the same request as an independent comparison.
+5. Run an ordinary search for the same request as an independent comparison,
+   and say what the curator route added that the search did not. For FIND and
+   HIRE the trusted collection is a starting point, never the whole search.
 
 **Report:** the master template, with one addition per pick: which curator's
 list surfaced it. Several copies of one list are one recommendation. A neutral

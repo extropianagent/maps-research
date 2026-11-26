@@ -36,6 +36,22 @@ Each is a request the owner can judge, in a city they know.
 5. **Record** the result in `experiments.md`: counts per list of good, fine and
    bad, the gaps, the spend, and the decision.
 
+## Sharper tests, one at a time
+
+Each isolates one thing. Change one thing per test, and repeat the baseline
+once to see how much the answer moves on its own.
+
+| Test | How | What it shows |
+|---|---|---|
+| Added value of a route | Compare the baseline with one new route (deeper search, `maps discover`, a curator's list) at the same filters, area and time | Whether the route found good eligible places the baseline did not. More results is not the measure |
+| Preference removal | Run the same request with one stated preference left out | If the picks do not change, the preference was decoration |
+| Runner-up crux | For the top pick and the runner-up, state what observed fact would reverse them and the cheapest way to observe it | Whether the order rests on evidence |
+| Order and framing | Give the AI the same shortlist in reversed and shuffled order, and with neutral versus promotional wording of the same facts, in a fresh conversation each time | Whether the judgement follows evidence or position. Use the simulator or a shortlist already fetched; do not query Maps again to manufacture test data |
+| Trusted collection | Search alone, trusted collection plus search, and collection alone, at equal effort | Whether the collection adds finds or narrows them |
+
+The toolkit's own ranking is code and does not depend on order
+(`tests/test_scoring.py`). These tests are about the AI's judgement on top of it.
+
 ## Deciding
 
 | Result | Decision |

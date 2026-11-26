@@ -57,6 +57,21 @@ are the plan's, taken from vendor claims and posts. None is enabled.
 | MapLeadFinder | A browser-extension scraper. | Excluded. |
 | [Billwarden](https://billwarden.com/) | Billing-spike monitoring. | A possible extra alert. It would need access to billing data, so audit it first; it does not replace the spending gateway. |
 
+## Named in the v2.3 update, not audited here
+
+All are outside the Maps-only default. None was read or run, none is enabled,
+and each needs the owner's explicit request to broaden sources.
+
+| Group | Tools | How to treat them |
+|---|---|---|
+| Another ranking of Google's data | Top-Rated.Online | Browse by hand as a comparison. Where its ratings come from is unknown, so check every rating on Maps. Its MCP would be a conditional third-party provider. |
+| Saudi and international directories | Dynamics.sa, Fahras, Cybo, POIData, D7 Lead Finder | Candidate leads only, each verified on Maps afterwards. Mixed and partly Maps-derived sources. |
+| Restaurant and travel sites | Restaurant Guru, Tripadvisor, Wanderlog, Sluurpy, Falstaff, Google Travel | A separate evidence source, labelled as its own. |
+| Curated-map services | Favourite.place, Mapstr, Beli, Gemlist | Places to find curators' picks. A pick shown on a map is not a Maps review. |
+| List export | Takeout Tools | Exporting other people's lists is not permitted here. |
+| Independent place data | Overture Maps with DuckDB, OpenStreetMap with Overpass, Foursquare, TomTom, HERE | For "what exists in this area" questions on openly licensed data. Never joined with or stored beside Google fields. |
+| Google's own | Places Insights (BigQuery) | Deferred. Aggregate counts and samples by subscription; not a business list or a review search. |
+
 ## Ideas taken, and ideas noted
 
 **Taken, from the Restaurant Skill:** preferences live in plain files the owner

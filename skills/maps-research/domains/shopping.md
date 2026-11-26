@@ -8,6 +8,8 @@ Read after the brief in `../SKILL.md`. This adds what is specific to shops.
   only as "store".
 - For "interesting independent shops", query themes, one search per theme
   (stationery, ceramics, vintage, records), not one broad "shops" query.
+- A shop's rating says nothing about one item. Stock, exact specification and
+  price are checked with the shop, not inferred from Maps.
 
 ## Filters and ranking
 - `explore` for browsing requests, `find` when the owner needs a specific item.
