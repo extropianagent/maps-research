@@ -7,6 +7,7 @@ code, so they hold whichever AI is driving the CLI. Approvals and stops are JSON
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import config
 from .providers.base import PolicyStop
@@ -33,6 +35,7 @@ EXCLUDED_METHODS = (
 OWNER_RESPONSIBILITIES = [
     "Use a dedicated Google Cloud project with an API key restricted to the Maps APIs",
     "Check each AI host's data settings before recording it",
+    "Read a conditional provider's own terms before approving it; the record holds what you verified",
 ]
 # A stop on one of these blocks the others: they share one key or one vendor account.
 FAMILIES = (
@@ -40,7 +43,11 @@ FAMILIES = (
     {"apify", "apify_contributor"},
 )
 PROVIDER_DETAILS = ("data_rights", "retrieval_method", "downstream_use")
-REQUIRED_DETAILS = {"provider": PROVIDER_DETAILS, "ai_host": ("data_handling",)}
+REQUIRED_DETAILS = {
+    "provider": PROVIDER_DETAILS,
+    "ai_host": ("data_handling",),
+    "egress_proxy": ("purpose",),
+}
 
 
 class PolicyViolation(RuntimeError):
@@ -95,8 +102,12 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
         if not (subject or "").strip():
             raise PolicyViolation("an AI host approval needs the host's name")
         required = ("data_handling",)
+    elif kind == "egress_proxy":
+        if not (subject or "").strip():
+            raise PolicyViolation("an egress proxy approval needs the proxy's host name")
+        required = ("purpose",)
     else:
-        raise PolicyViolation(f"unknown approval kind {kind!r}; use 'provider' or 'ai_host'")
+        raise PolicyViolation(f"unknown approval kind {kind!r}; use 'provider', 'ai_host' or 'egress_proxy'")
     missing = [k for k in required if not details.get(k)]
     if missing:
         raise PolicyViolation(f"approval for {subject} is missing: {', '.join(missing)}")
@@ -131,7 +142,8 @@ def _record_problem(r: Any) -> str | None:
         return "not an object"
     if not isinstance(r.get("subject"), str) or not r["subject"].strip():
         return "no subject"
-    required = REQUIRED_DETAILS.get(r.get("kind"))  # type: ignore[arg-type]
+    kind = r.get("kind")
+    required = REQUIRED_DETAILS.get(kind) if isinstance(kind, str) else None
     if required is None:
         return f"unknown kind {r.get('kind')!r}"
     if not isinstance(r.get("owner_statement"), str) or not r["owner_statement"].strip():
@@ -184,8 +196,24 @@ def record_stop(provider: str, detail: str) -> None:
     _write("stops.json", stops)
 
 
+def _stop_problem(s: Any) -> str | None:
+    """Why a stored stop is not usable, or None."""
+    if not isinstance(s, dict):
+        return "not an object"
+    if not isinstance(s.get("provider"), str) or not s["provider"].strip():
+        return "no provider"
+    if not isinstance(s.get("open"), bool):
+        return "open is not true or false"
+    return None
+
+
 def open_stops() -> list[dict[str, Any]]:
-    return [s for s in _read("stops.json") if s.get("open")]
+    return [s for s in _read("stops.json") if _stop_problem(s) is None and s["open"]]
+
+
+def invalid_stops() -> list[dict[str, Any]]:
+    """Stored stops that are malformed, with the reason; they stop nothing."""
+    return [{"record": s, "problem": p} for s in _read("stops.json") if (p := _stop_problem(s))]
 
 
 def clear_stop(provider: str, *, owner_statement: str) -> int:
@@ -195,7 +223,7 @@ def clear_stop(provider: str, *, owner_statement: str) -> int:
     stops = _read("stops.json")
     n = 0
     for s in stops:
-        if s.get("open") and s.get("provider") == provider:
+        if _stop_problem(s) is None and s["open"] and s["provider"] == provider:
             s.update(
                 {
                     "open": False,
@@ -305,10 +333,11 @@ def _bad_value(text: str) -> str | None:
     if _COOKIE_VALUE.search(text) or "sapisidhash" in low or "ya29." in low or text.strip().startswith("1//"):
         return _CREDENTIAL_MSG
     for m in _URL.finditer(text):
-        scheme, authority, rest = m.group(1).lower(), m.group(2), m.group(3)
+        scheme, authority = m.group(1).lower(), m.group(2)
         if "@" in authority and ":" in authority.split("@", 1)[0]:
             return _CREDENTIAL_MSG
-        if scheme.startswith("socks") or "proxy" in authority.lower() or "proxy" in rest.lower():
+        host = authority.rsplit("@", 1)[-1].lower()
+        if scheme.startswith("socks") or "proxy" in host:
             return _CIRCUMVENT_MSG
     return None
 
@@ -341,7 +370,13 @@ def check_outbound_payload(provider: str, payload: Any) -> None:
 
 def check_google_key(key: str | None) -> None:
     """Refuse anything that is not a plain API key: OAuth tokens, bearer headers, in any case."""
-    low = (key or "").strip().casefold()
+    stripped = (key or "").strip()
+    low = stripped.casefold()
+    if stripped.startswith(("1//", "eyJ")):
+        raise PolicyViolation(
+            "the Google key looks like a refresh token (1//) or a signed token (eyJ); this toolkit "
+            "only accepts an API key from a dedicated Google Cloud project"
+        )
     if "ya29." in low or low.startswith("bearer "):
         raise PolicyViolation(
             "the Google key looks like a personal OAuth token (ya29. or a Bearer value); this toolkit "
@@ -349,34 +384,151 @@ def check_google_key(key: str | None) -> None:
         )
 
 
+_RULES = r"(?:terms|polic|acceptable use|guideline)"
+_GEMINI_MODEL = re.compile(r"^gemini-[a-z0-9][a-z0-9.\-]*$")
+
+
+def check_gemini_model(model: str) -> str:
+    """Maps grounding runs only on Gemini models: refuse any other name (it ends up in the URL path)."""
+    name = (model or "").strip().removeprefix("models/")
+    if not _GEMINI_MODEL.match(name):
+        raise PolicyViolation(
+            f"Maps grounding runs only on Gemini models; {model!r} is not a Gemini model name "
+            "(MAPS_GEMINI_MODEL must look like gemini-2.5-flash)"
+        )
+    return name
+
+
 _ENFORCEMENT_PATTERNS = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
-        r"suspen",
-        r"\bban(ned|s)?\b",
-        r"terminat",
-        r"unusual (traffic|activity)",
+        r"\bsuspended\b",
+        r"\bsuspension\b",
+        r"\bbanned\b",
+        r"\bban\b(?=[\s\S]{0,40}\b(?:account|project|key|ip|access)\b)",
+        r"\b(?:account|project|key|ip|access)\b(?=[\s\S]{0,40}\bban\b)[\s\S]{0,40}\bban\b",
+        r"\bhas been terminated\b",
+        r"\b(?:account|project|access)\b[^.\n]{0,60}\bterminated\b",
+        r"\babus(?:e|ed|ive)\b",
+        r"\bmisuse\b",
+        r"unusual (?:traffic|activity)",
         r"automated quer",
-        r"captcha",
-        r"abus",
-        r"misuse",
-        r"violat",
+        r"\bcaptcha\b",
         r"terms of service",
         r"acceptable use",
-        r"account[^.\n]{0,60}\b(blocked|disabled|closed)",
+        rf"\bviolat\w*[\s\S]{{0,60}}{_RULES}",
+        rf"{_RULES}[\s\S]{{0,60}}\bviolat\w*",
     )
 )
+_ACCOUNT_BLOCKED = re.compile(r"\baccount\b[^.\n]{0,60}\b(?:blocked|disabled|closed)\b", re.IGNORECASE)
+ENFORCEMENT_SCAN_CHARS = 8192
+
+
+def enforcement_text(body: str | bytes | dict[str, Any] | list[Any] | None) -> str:
+    """The human-readable text of a response body, for enforcement detection.
+
+    JSON bodies yield only their string VALUES (never key names such as `fieldViolations`); a value
+    that is itself JSON is unpacked. Anything else is returned as it is. At most 8,192 characters.
+    """
+    if body is None:
+        return ""
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", "replace")
+    out: list[str] = []
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if isinstance(node, str):
+            stripped = node.strip()
+            if depth < 6 and stripped[:1] in ("{", "["):
+                try:
+                    parsed = json.loads(stripped)
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, (dict, list)):
+                    walk(parsed, depth + 1)
+                    return
+            out.append(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v, depth)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, depth)
+
+    walk(body)
+    return "\n".join(out)[:ENFORCEMENT_SCAN_CHARS]
 
 
 def detect_enforcement(status_code: int, text: str | None) -> str | None:
-    """A short reason when a response looks like enforcement rather than an ordinary error."""
+    """A short reason when a response looks like enforcement rather than an ordinary error.
+
+    Pass the text through `enforcement_text` first.
+    """
     if status_code == 451:
         return "HTTP 451 (unavailable for legal reasons)"
+    text = text or ""
     for rx in _ENFORCEMENT_PATTERNS:
-        m = rx.search(text or "")
+        m = rx.search(text)
         if m:
-            return f"response mentions {m.group(0).strip()!r}"
+            return f"response mentions {m.group(0).strip()[:60]!r}"
+    if "billing" not in text.lower():
+        m = _ACCOUNT_BLOCKED.search(text)
+        if m:
+            return f"response mentions {m.group(0).strip()[:60]!r}"
     return None
+
+
+# --- proxies from the environment ---------------------------------------------------------------
+
+PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy")
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def check_proxy_env() -> None:
+    """Refuse a proxy set in the environment unless it is loopback or the owner recorded it."""
+    for var in PROXY_VARS:
+        value = (os.environ.get(var) or "").strip()
+        if not value:
+            continue
+        try:
+            parts = urlsplit(value if "://" in value else f"//{value}")
+            host = (parts.hostname or "").lower()
+            userinfo = parts.username is not None or parts.password is not None
+        except ValueError:
+            raise PolicyViolation(f"{var} is set but is not a valid proxy URL; unset it") from None
+        if userinfo:
+            raise PolicyViolation(
+                f"{var} carries credentials in the proxy URL (user:pass@); this toolkit does not send "
+                "requests through a proxy that needs embedded credentials. Unset it"
+            )
+        if _is_loopback(host):
+            continue
+        record = approved(host, "egress_proxy") if host else None
+        if record is None:
+            raise PolicyViolation(
+                f"{var} sets a proxy ({host or 'unparsable host'}) in the environment, and the toolkit does "
+                "not route requests through an unrecorded proxy (proxy rotation to get around blocks is "
+                "excluded). If it is a legitimate network proxy, the owner records it: maps policy "
+                f'approve {host} --kind egress_proxy --owner-statement "<owner\'s words>" '
+                '--purpose "<why this network proxy is needed>"'
+            )
+
+
+def proxy_status() -> dict[str, Any]:
+    """The proxy check as a status document: never raises."""
+    try:
+        check_proxy_env()
+    except PolicyViolation as e:
+        return {"ok": False, "problem": str(e)}
+    return {"ok": True, "problem": None}
 
 
 # --- state directory --------------------------------------------------------------------------
@@ -408,6 +560,9 @@ def status() -> dict[str, Any]:
         "approvals": approvals(),
         "invalid_approvals": invalid_approvals(),
         "open_stops": open_stops(),
+        "invalid_stops": invalid_stops(),
+        "proxy": proxy_status(),
+        "policy_dir": {"path": str(config.policy_dir()), "location": config.policy_location()},
         "ai_host": {"env": host, "approved": bool(host and approved(host, "ai_host"))},
         "retention_cap_days": config.MAX_RETENTION_DAYS,
         "state_dir": check,

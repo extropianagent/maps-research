@@ -31,6 +31,7 @@ from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, SearchPage
+from .http import make_client
 
 BASE_URL = "https://api.dataforseo.com/v3"
 OK = 20000
@@ -74,7 +75,7 @@ class DataForSEOProvider:
         self.budget = budget
         self._login = login if login is not None else os.environ.get("DATAFORSEO_LOGIN", "")
         self._password = password if password is not None else os.environ.get("DATAFORSEO_PASSWORD", "")
-        self._client = client or httpx.Client(timeout=timeout)
+        self._client = client or make_client(timeout=timeout)
         self.poll_timeout = poll_timeout
         self.poll_interval = poll_interval
         self._sleep = sleep
@@ -95,7 +96,7 @@ class DataForSEOProvider:
         except httpx.HTTPError as e:
             raise ProviderError(f"dataforseo: request failed ({type(e).__name__})") from None
         if resp.status_code != 200:
-            reason = policy.detect_enforcement(resp.status_code, resp.text[:300])
+            reason = policy.detect_enforcement(resp.status_code, policy.enforcement_text(resp.text))
             if reason:
                 raise PolicyStop(self.name, f"HTTP {resp.status_code}: {reason}")
             raise ProviderError(f"dataforseo: HTTP {resp.status_code}")
@@ -108,7 +109,9 @@ class DataForSEOProvider:
             tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
             for holder in (data, *(t for t in tasks if isinstance(t, dict))):
                 msg = holder.get("status_message")
-                reason = policy.detect_enforcement(200, msg if isinstance(msg, str) else "")
+                reason = policy.detect_enforcement(
+                    200, policy.enforcement_text(msg if isinstance(msg, str) else "")
+                )
                 if reason:
                     raise PolicyStop(self.name, f"status {holder.get('status_code')}: {str(msg)[:200]}")
         if not isinstance(data, dict) or not isinstance(data.get("tasks"), list) or not data["tasks"]:
@@ -120,7 +123,7 @@ class DataForSEOProvider:
         task = data["tasks"][0]
         code = task.get("status_code")
         if code != OK and not (allow_pending and code in (20100, 40601, 40602)):
-            reason = policy.detect_enforcement(200, str(task.get("status_message")))
+            reason = policy.detect_enforcement(200, policy.enforcement_text(str(task.get("status_message"))))
             if reason:
                 raise PolicyStop(DataForSEOProvider.name, f"task error {code}: {reason}")
             raise ProviderError(f"dataforseo: task error {code}: {str(task.get('status_message'))[:80]}")

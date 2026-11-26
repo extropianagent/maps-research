@@ -22,6 +22,7 @@ from ..budget import Budget, BudgetExceeded
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
+from .http import make_client
 
 BASE_URL = "https://places.googleapis.com/v1"
 SEARCH_URL = f"{BASE_URL}/places:searchText"
@@ -79,7 +80,7 @@ class GooglePlaces:
         self.budget = budget
         self.tier = _check_tier(tier)
         self._key = api_key if api_key is not None else os.environ.get("GOOGLE_MAPS_API_KEY", "")
-        self._client = client or httpx.Client(timeout=30.0)
+        self._client = client or make_client(timeout=30.0)
         self._sleep = sleep
 
     def available(self) -> bool:
@@ -124,7 +125,7 @@ class GooglePlaces:
                     detail = str(err.get("message") or "")
             except (ValueError, AttributeError):
                 pass
-            reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
+            reason = policy.detect_enforcement(resp.status_code, policy.enforcement_text(resp.text))
             if reason:
                 raise PolicyStop(self.name, self._scrub(f"HTTP {resp.status_code}: {detail or reason}"))
             if resp.status_code in (429, 503) and attempt == 0:

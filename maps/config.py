@@ -30,9 +30,26 @@ def set_policy_dir_for_tests(path: Path | str | None) -> None:
     _policy_dir_override = Path(path) if path is not None else None
 
 
+def _is_source_checkout() -> bool:
+    return (REPO_ROOT / "pyproject.toml").is_file()
+
+
 def policy_dir() -> Path:
-    """Approvals and stops live in the repo so they survive ephemeral machines. Not configurable."""
-    return _policy_dir_override or REPO_ROOT / "policy"
+    """Approvals and stops. In a source checkout: its `policy/` folder (committed, so it survives
+    ephemeral machines). Installed as a package: a fixed per-user folder, never under the state
+    directory (`purge --all` must not delete it). Not configurable by any MAPS_* variable."""
+    if _policy_dir_override is not None:
+        return _policy_dir_override
+    if _is_source_checkout():
+        return REPO_ROOT / "policy"
+    return Path.home() / ".maps-research-policy"
+
+
+def policy_location() -> str:
+    """Which case `policy_dir` is in."""
+    if _policy_dir_override is not None:
+        return "test override"
+    return "source checkout" if _is_source_checkout() else "per-user folder"
 
 
 def _requested_retention() -> float:

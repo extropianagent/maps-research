@@ -44,6 +44,7 @@ from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
+from .http import make_client
 
 ACTOR = "compass~crawler-google-places"
 BASE_URL = "https://api.apify.com/v2"
@@ -98,7 +99,7 @@ class ApifyProvider:
     ) -> None:
         self.budget = budget
         self._token = token if token is not None else os.environ.get("APIFY_TOKEN", "")
-        self._client = client or httpx.Client(timeout=timeout)
+        self._client = client or make_client(timeout=timeout)
 
     def available(self) -> bool:
         return bool(self._token)
@@ -117,7 +118,7 @@ class ApifyProvider:
         except httpx.HTTPError as e:
             raise ProviderError(f"apify: request failed ({type(e).__name__})") from None
         if not 200 <= resp.status_code < 300:
-            reason = policy.detect_enforcement(resp.status_code, resp.text[:300])
+            reason = policy.detect_enforcement(resp.status_code, policy.enforcement_text(resp.text))
             if reason:
                 raise PolicyStop(self.name, f"HTTP {resp.status_code}: {reason}")
         if resp.status_code == 429:

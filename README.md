@@ -10,7 +10,9 @@ You do not type commands. You write requests like these:
 - "Shops across London, quality first. I will spend up to $3."
 - "Tile installers in Riyadh with a rating of 4.5 or lower and at least 10 reviews. Search exhaustively and investigate their workmanship."
 
-The AI follows `skills/maps-research/SKILL.md` to turn a request into commands.
+The AI follows `skills/maps-research/SKILL.md` to turn a request into commands, with a short module per domain: food, hotels, shopping, hiring, city exploration and investigation.
+
+Three controls apply to every request. Depth and spending are yours to set each time. Account protection is fixed: see `docs/account-protection.md`.
 
 ## Try it now, no API key
 
@@ -112,7 +114,13 @@ The default is free: the guard refuses any request that would cost money and sto
 
 ## Status
 
-This toolkit has been built and tested against mocked APIs and a simulator only. Nothing has run against the live Google APIs yet. Field names, free allowances and prices are unconfirmed until a first live run: see `docs/live-verification.md`.
+No request with an API key has been made yet. Every billable call in the test
+suite is mocked, and searches have only run against the simulator. What has
+been checked against the real services without a key: the request and response
+fields of the Google providers, against Google's published API descriptions,
+and the handshake and tool schema of Google's agent tools endpoint. Behaviour,
+billing and the third-party providers are unconfirmed until a first live run:
+see `docs/live-verification.md`.
 
 ## Layout
 

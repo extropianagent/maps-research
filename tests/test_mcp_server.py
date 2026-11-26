@@ -116,7 +116,7 @@ def test_usage_error_is_a_tool_error_with_the_cli_message():
     assert is_error and text
     is_error, text = call("maps_rank", run_id="nope")
     assert is_error
-    assert "no such run: nope" in text
+    assert "no such run" in text and "nope" not in text
     assert "\n" not in text.strip()
 
 

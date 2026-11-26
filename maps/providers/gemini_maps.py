@@ -42,6 +42,7 @@ from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
 from .google_agent_tools import AgentSearchResult
+from .http import make_client
 
 BASE_URL = "https://generativelanguage.googleapis.com"
 DEFAULT_MODEL = "gemini-flash-latest"  # unconfirmed alias; override with MAPS_GEMINI_MODEL
@@ -68,7 +69,7 @@ class GeminiMaps:
     ) -> None:
         self.budget = budget
         self._key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", "")
-        self._client = client or httpx.Client(timeout=60.0)
+        self._client = client or make_client(timeout=60.0)
         self.model = model or os.environ.get("MAPS_GEMINI_MODEL") or DEFAULT_MODEL
 
     def available(self) -> bool:
@@ -78,7 +79,7 @@ class GeminiMaps:
         return text.replace(self._key, "***") if self._key else text
 
     def _url(self) -> str:
-        model = self.model.removeprefix("models/")
+        model = policy.check_gemini_model(self.model)
         return f"{BASE_URL}/v1beta/models/{model}:generateContent"
 
     @staticmethod
@@ -111,7 +112,7 @@ class GeminiMaps:
             except (ValueError, AttributeError):
                 detail = resp.text[:200]
             # Enforcement first: before the quota mapping, and no retry exists to run.
-            reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
+            reason = policy.detect_enforcement(resp.status_code, policy.enforcement_text(resp.text))
             if reason:
                 raise PolicyStop(self.name, self._scrub(f"HTTP {resp.status_code}: {detail or reason}"))
             if resp.status_code == 429:

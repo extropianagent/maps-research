@@ -32,6 +32,7 @@ from .budget import Budget, BudgetExceeded, Ledger, current_month
 from .geography import BBox
 from .models import Hit, Place, Query
 from .pricing import PRICES_CHECKED, SKUS
+from .providers import http as provider_http
 from .providers.apify import ApifyProvider, parse_contributor
 from .providers.base import PolicyStop, ProviderError, QuotaExceeded
 from .providers.dataforseo import DataForSEOProvider
@@ -139,10 +140,18 @@ def warn(msg: str) -> None:
 
 
 def _open_run(run_id: str) -> RunStore:
+    """Open a run for a command that shows or extends its places.
+
+    A run with Google-grounded sightings (agent tools, Gemini) may only be shown to an approved AI host,
+    so it is gated here, once, for every command that uses it.
+    """
     try:
-        return RunStore.open(config.state_dir(), run_id)
+        run = RunStore.open(config.state_dir(), run_id)
     except FileNotFoundError:
-        raise CliError(f"no such run: {run_id} (see `maps runs`)") from None
+        raise CliError("no such run: not a run ID in this state directory (see `maps runs`)") from None
+    if any(h.provider in GROUNDED_PROVIDERS for p in run.places().values() for h in p.hits):
+        policy.require_ai_host()
+    return run
 
 
 def _touch_spec(run: RunStore, **changes: Any) -> None:
@@ -688,7 +697,8 @@ def _provider_info(p: Any) -> dict[str, Any]:
 @main.command()
 def doctor() -> None:
     """Show what is configured. Free: makes no API call and prints no secret values."""
-    probe = _construct_providers(list(ENV_VARS), Budget(Ledger(":memory:")), None, None)
+    with provider_http.unchecked_proxy():  # doctor makes no request; the proxy check is reported below
+        probe = _construct_providers(list(ENV_VARS), Budget(Ledger(":memory:")), None, None)
     emit(
         {
             "version": __version__,
@@ -1135,6 +1145,7 @@ def discover(
             }
             for p in places
         ],
+        "model": getattr(tools, "model", None),
         "summary": found.summary if found else "",
         "source_note": GEMINI_NOTE if via == "gemini" else SOURCE_NOTE,
         "stopped": stopped,
@@ -1585,7 +1596,7 @@ def policy_status() -> None:
 
 @policy_group.command("approve")
 @click.argument("subject")
-@click.option("--kind", type=click.Choice(["provider", "ai_host"]), required=True)
+@click.option("--kind", type=click.Choice(["provider", "ai_host", "egress_proxy"]), required=True)
 @click.option(
     "--owner-statement", required=True, metavar="TEXT", help="The owner's own words approving this."
 )
@@ -1595,6 +1606,7 @@ def policy_status() -> None:
 )
 @click.option("--downstream-use", metavar="TEXT", help="provider: what the data is used for afterwards.")
 @click.option("--data-handling", metavar="TEXT", help="ai_host: what its data settings say about training.")
+@click.option("--purpose", metavar="TEXT", help="egress_proxy: why this network proxy is needed.")
 def policy_approve(
     subject: str,
     kind: str,
@@ -1603,18 +1615,25 @@ def policy_approve(
     retrieval_method: str | None,
     downstream_use: str | None,
     data_handling: str | None,
+    purpose: str | None,
 ) -> None:
-    """Record the OWNER's approval of a conditional provider or an AI host. Free.
+    """Record the OWNER's approval of a conditional provider, an AI host or an egress proxy. Free.
 
     This records the owner's decision, not yours: run it only with the owner's own statement from the
     current conversation, quoted verbatim in --owner-statement. provider needs --data-rights,
-    --retrieval-method and --downstream-use; ai_host needs --data-handling.
+    --retrieval-method and --downstream-use; ai_host needs --data-handling; egress_proxy (SUBJECT is the
+    proxy's host name, for a legitimate network proxy named in HTTPS_PROXY) needs --purpose.
     """
-    details = (
-        {"data_rights": data_rights, "retrieval_method": retrieval_method, "downstream_use": downstream_use}
-        if kind == "provider"
-        else {"data_handling": data_handling}
-    )
+    if kind == "provider":
+        details = {
+            "data_rights": data_rights,
+            "retrieval_method": retrieval_method,
+            "downstream_use": downstream_use,
+        }
+    elif kind == "egress_proxy":
+        details = {"purpose": purpose}
+    else:
+        details = {"data_handling": data_handling}
     emit(policy.approve(subject, kind, owner_statement=owner_statement, details=details))
 
 

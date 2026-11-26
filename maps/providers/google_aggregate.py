@@ -22,6 +22,7 @@ from .. import policy
 from ..budget import Budget, BudgetExceeded
 from ..geography import BBox
 from .base import PolicyStop, ProviderError, QuotaExceeded
+from .http import make_client
 
 URL = "https://areainsights.googleapis.com/v1:computeInsights"
 PLACES_LIMIT = 100  # INSIGHT_PLACES returns at most this many IDs per request
@@ -62,7 +63,7 @@ class PlacesAggregate:
     ) -> None:
         self.budget = budget
         self._key = api_key if api_key is not None else os.environ.get("GOOGLE_MAPS_API_KEY", "")
-        self._client = client or httpx.Client(timeout=60.0)
+        self._client = client or make_client(timeout=60.0)
 
     def available(self) -> bool:
         return bool(self._key)
@@ -114,7 +115,7 @@ class PlacesAggregate:
                     detail = str(err.get("message") or "")
             except (ValueError, AttributeError):
                 pass
-            reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
+            reason = policy.detect_enforcement(resp.status_code, policy.enforcement_text(resp.text))
             if reason:
                 raise PolicyStop(
                     self.name, f"HTTP {resp.status_code}: {detail or reason}".replace(self._key, "***")

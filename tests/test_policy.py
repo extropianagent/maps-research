@@ -277,6 +277,7 @@ def test_status(monkeypatch, tmp_path):
     assert st["owner_responsibilities"] == [
         "Use a dedicated Google Cloud project with an API key restricted to the Maps APIs",
         "Check each AI host's data settings before recording it",
+        "Read a conditional provider's own terms before approving it; the record holds what you verified",
     ]
     assert st["registry"]["conditional"] == sorted(policy.CONDITIONAL)
 
@@ -358,7 +359,6 @@ def test_ordinary_errors_are_not_enforcement(status, text):
         {"x": "socks5://10.0.0.1:1080"},
         {"x": "socks://10.0.0.1:1080"},
         {"x": "http://rotating-proxy.example:8000"},
-        {"x": "https://example.com/proxy/pool"},
         {"useResidentialIPs": True, "rotateIp": True},
         {"rotate": 1},
         {"proxies": []},

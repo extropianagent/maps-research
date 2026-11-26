@@ -13,6 +13,7 @@ plus your own notes (docs/permissions.md).
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import shutil
 import time
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from .models import Place, Review
+
+RUN_ID = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 
 
 @dataclass
@@ -74,6 +77,9 @@ class RunStore:
 
     @classmethod
     def open(cls, root: Path | str, run_id: str) -> RunStore:
+        """Open a run by ID. A run ID is an ID, never a path: anything else is "no such run"."""
+        if not isinstance(run_id, str) or not RUN_ID.match(run_id):
+            raise FileNotFoundError("no such run (a run ID looks like 20250101-120000-ab12)")
         run = cls(root, run_id)
         if not (run.dir / "spec.json").exists():
             raise FileNotFoundError(f"no such run: {run_id}")
@@ -143,7 +149,7 @@ def list_runs(root: Path | str) -> list[dict[str, Any]]:
     rows = []
     for d in runs_dir.iterdir():
         spec_path = d / "spec.json"
-        if not spec_path.exists():
+        if not RUN_ID.match(d.name) or not spec_path.exists():
             continue
         rows.append(
             {

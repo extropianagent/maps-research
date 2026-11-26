@@ -54,6 +54,7 @@ from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
 from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
+from .http import make_client
 
 DEFAULT_ENDPOINT = "https://mapstools.googleapis.com/mcp"
 PROTOCOL_VERSION = "2025-06-18"
@@ -249,7 +250,7 @@ class MapsAgentTools:
     ) -> None:
         self.budget = budget
         self._key = api_key if api_key is not None else os.environ.get("GOOGLE_MAPS_API_KEY", "")
-        self._client = client or httpx.Client(timeout=60.0)
+        self._client = client or make_client(timeout=60.0)
         self._endpoint = endpoint
         self._next_id = 0
         self._session_id: str | None = None
@@ -288,7 +289,7 @@ class MapsAgentTools:
                 detail = str(err.get("message") or "") if isinstance(err, dict) else str(err or "")
             except (ValueError, AttributeError):
                 detail = resp.text[:200]
-            reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
+            reason = policy.detect_enforcement(resp.status_code, policy.enforcement_text(resp.text))
             if reason:
                 raise PolicyStop(self.name, self._scrub(f"HTTP {resp.status_code}: {detail or reason}"))
         if resp.status_code == 429:
@@ -310,7 +311,7 @@ class MapsAgentTools:
                 text = f"JSON-RPC error {err.get('code')}: {err.get('message')}"
             else:
                 text = f"JSON-RPC error: {err}"
-            reason = policy.detect_enforcement(200, text)
+            reason = policy.detect_enforcement(200, policy.enforcement_text(err))
             if reason:
                 raise PolicyStop(self.name, self._scrub(text[:300]))
             raise ProviderError(self._scrub(f"google_agent_tools: {text}"))
@@ -466,10 +467,9 @@ class MapsAgentTools:
         self.budget.charge(SKU)
         result = self._rpc("tools/call", {"name": TOOL_NAME, "arguments": args})
         if result.get("isError"):
-            detail = " ".join(
-                b["text"] for b in result.get("content") or [] if isinstance(b, dict) and b.get("text")
-            )
-            if policy.detect_enforcement(200, detail):
+            blocks = [b["text"] for b in result.get("content") or [] if isinstance(b, dict) and b.get("text")]
+            detail = " ".join(blocks)
+            if policy.detect_enforcement(200, policy.enforcement_text(blocks)):
                 raise PolicyStop(self.name, self._scrub(f"tool error: {detail[:300]}"))
             raise ProviderError(self._scrub(f"google_agent_tools: tool error: {detail[:300]}".rstrip(": ")))
         found, summary, blob, _source = self._parse(result)
