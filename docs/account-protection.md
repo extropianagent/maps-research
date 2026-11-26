@@ -109,9 +109,6 @@ the owner's words, in git, where a change is visible in the history, and why
 `AGENTS.md` makes those commands the owner's decision alone. Review changes to
 `policy/` and `maps/policy.py` like any change to a lock.
 
-The layer was attacked by an independent reviewer on 2026-11-26. Fourteen ways
-past it were found and closed, each with a regression test.
-
 ## Known gaps
 
 - Enforcement detection reads the wording of error messages. An unfamiliar
