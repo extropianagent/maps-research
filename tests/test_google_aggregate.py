@@ -104,7 +104,9 @@ def test_place_ids_request_and_parsing():
 
     def handler(req):
         seen.append(req)
-        return httpx.Response(200, json={"placeInsights": [{"place": "places/ChIJa"}, {"place": "places/ChIJb"}]})
+        return httpx.Response(
+            200, json={"placeInsights": [{"place": "places/ChIJa"}, {"place": "places/ChIJb"}]}
+        )
 
     agg, budget = make(handler)
     assert agg.place_ids(BBOX, types=["cafe"], min_rating=4.0) == ["ChIJa", "ChIJb"]
@@ -146,7 +148,12 @@ def test_small_root_fetches_ids_directly():
     res = agg.enumerate(BBOX, types=["cafe"])
     assert isinstance(res, EnumerationResult)
     assert (res.place_ids, res.total_count, res.requests, res.unresolved, res.stopped) == (
-        ["a", "b", "c"], 3, 2, [], None)
+        ["a", "b", "c"],
+        3,
+        2,
+        [],
+        None,
+    )
     assert seen == [("INSIGHT_COUNT", BBOX.key()), ("INSIGHT_PLACES", BBOX.key())]
 
 

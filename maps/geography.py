@@ -30,7 +30,7 @@ class BBox:
             raise ValueError(f"invalid longitudes (antimeridian unsupported): {self.west}, {self.east}")
 
     @classmethod
-    def parse(cls, raw: str) -> "BBox":
+    def parse(cls, raw: str) -> BBox:
         """Parse 'south,west,north,east'."""
         parts = [float(p) for p in raw.split(",")]
         if len(parts) != 4:
@@ -38,7 +38,7 @@ class BBox:
         return cls(*parts)
 
     @classmethod
-    def around(cls, lat: float, lng: float, radius_m: float) -> "BBox":
+    def around(cls, lat: float, lng: float, radius_m: float) -> BBox:
         """Square box enclosing a circle of radius_m around a point."""
         dlat = radius_m / M_PER_DEG_LAT
         dlng = radius_m / (M_PER_DEG_LAT * max(math.cos(math.radians(lat)), 1e-6))
@@ -69,7 +69,7 @@ class BBox:
             return False
         return self.south <= lat <= self.north and self.west <= lng <= self.east
 
-    def split(self) -> list["BBox"]:
+    def split(self) -> list[BBox]:
         """Four equal quadrants."""
         mlat, mlng = self.center
         return [

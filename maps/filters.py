@@ -10,8 +10,8 @@ unknown fails any bound on that field: unknown is never assumed to qualify.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from .geography import BBox
 from .models import Place
@@ -30,7 +30,11 @@ class Filters:
     bbox: BBox | None = None
 
     def active(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v not in (None, [], False)}
+        return {k: v for k, v in self.__dict__.items() if v is not None and v is not False and v != []}
+
+
+def _norm_type(t: str) -> str:
+    return re.sub(r"[\s\-]+", "_", t.strip().casefold())
 
 
 def _in_bounds(value: float | None, low: float | None, high: float | None) -> bool:
@@ -46,10 +50,12 @@ def keep(place: Place, f: Filters) -> bool:
         return False
     if not _in_bounds(place.review_count, f.min_reviews, f.max_reviews):
         return False
-    all_types = set(place.types) | ({place.primary_type} if place.primary_type else set())
-    if f.types and not all_types & set(f.types):
+    all_types = {_norm_type(t) for t in place.types} | (
+        {_norm_type(place.primary_type)} if place.primary_type else set()
+    )
+    if f.types and not all_types & {_norm_type(t) for t in f.types}:
         return False
-    if f.exclude_types and all_types & set(f.exclude_types):
+    if f.exclude_types and all_types & {_norm_type(t) for t in f.exclude_types}:
         return False
     if f.open_only and place.business_status == "CLOSED_PERMANENTLY":
         return False

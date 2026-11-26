@@ -6,11 +6,11 @@ search. Each lesson names its evidence: a case study, an experiment, or
 
 ## Confirmed on the simulator (to re-confirm live)
 
-- One whole-city search sees almost nothing: 3% of 1,178 matching places, and no
-  hidden gems at all, because the cap returns the most prominent first.
+- One whole-city search sees almost nothing: 2% of about 1,200 matching places,
+  and no hidden gems at all, because the cap returns the most prominent first.
   Evidence: `evals/experiments.md` 2026-11-26.
-- Subdividing saturated cells recovers the rest: 56% at standard depth, ~100% at
-  deep, for about 34 and 94 searches respectively. Evidence: same.
+- Subdividing saturated cells recovers the rest: 54% at standard depth, 99% at
+  deep, for about 38 and 101 searches. Evidence: same.
 - A second language is worth more than more depth when businesses are listed in
   only one language: English alone tops out near 76% however deep the search
   goes. Evidence: same.

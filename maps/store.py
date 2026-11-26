@@ -65,7 +65,7 @@ class RunStore:
         self._tasks: dict[str, TaskRecord] | None = None
 
     @classmethod
-    def create(cls, root: Path | str, spec: dict[str, Any]) -> "RunStore":
+    def create(cls, root: Path | str, spec: dict[str, Any]) -> RunStore:
         run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
         run = cls(root, run_id)
         run.dir.mkdir(parents=True)
@@ -73,7 +73,7 @@ class RunStore:
         return run
 
     @classmethod
-    def open(cls, root: Path | str, run_id: str) -> "RunStore":
+    def open(cls, root: Path | str, run_id: str) -> RunStore:
         run = cls(root, run_id)
         if not (run.dir / "spec.json").exists():
             raise FileNotFoundError(f"no such run: {run_id}")

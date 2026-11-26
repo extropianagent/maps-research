@@ -114,9 +114,7 @@ def _touch_spec(run: RunStore, **changes: Any) -> None:
 # --- shared option groups -----------------------------------------------------------------------
 
 
-def _option_group(
-    key: str, names: list[str], options: list[Callable], build: Callable[..., Any]
-) -> Callable:
+def _option_group(key: str, names: list[str], options: list[Callable], build: Callable[..., Any]) -> Callable:
     """Add `options` to a command and hand their values to it as one object named `key`."""
 
     def decorate(f: Callable) -> Callable:
@@ -159,24 +157,46 @@ def location_options(f: Callable) -> Callable:
         "loc",
         ["area", "bbox_raw", "near", "radius"],
         [
-            click.option("--area", "area", metavar="NAME",
-                         help="Search area by name, e.g. 'Riyadh'. Costs 1 Google Text Search Pro call the "
-                              "first time (cached 30 days in the state dir)."),
-            click.option("--bbox", "bbox_raw", metavar="S,W,N,E",
-                         help="Search area as south,west,north,east in degrees. Free."),
-            click.option("--near", "near", metavar="LAT,LNG",
-                         help="Centre of a circular search area; use with --radius. Free."),
-            click.option("--radius", "radius", type=float, metavar="METERS",
-                         help=f"Radius for --near (default {DEFAULT_RADIUS_M:g})."),
+            click.option(
+                "--area",
+                "area",
+                metavar="NAME",
+                help="Search area by name, e.g. 'Riyadh'. Costs 1 Google Text Search Pro call the "
+                "first time (cached 30 days in the state dir).",
+            ),
+            click.option(
+                "--bbox",
+                "bbox_raw",
+                metavar="S,W,N,E",
+                help="Search area as south,west,north,east in degrees. Free.",
+            ),
+            click.option(
+                "--near",
+                "near",
+                metavar="LAT,LNG",
+                help="Centre of a circular search area; use with --radius. Free.",
+            ),
+            click.option(
+                "--radius",
+                "radius",
+                type=float,
+                metavar="METERS",
+                help=f"Radius for --near (default {DEFAULT_RADIUS_M:g}).",
+            ),
         ],
         _build_location,
     )(f)
 
 
 def _build_filters(
-    min_rating: float | None, max_rating: float | None, min_reviews: int | None,
-    max_reviews: int | None, types: tuple[str, ...], exclude_types: tuple[str, ...],
-    open_only: bool, name_regex: str | None,
+    min_rating: float | None,
+    max_rating: float | None,
+    min_reviews: int | None,
+    max_reviews: int | None,
+    types: tuple[str, ...],
+    exclude_types: tuple[str, ...],
+    open_only: bool,
+    name_regex: str | None,
 ) -> filters.Filters:
     if name_regex:
         try:
@@ -184,30 +204,60 @@ def _build_filters(
         except re.error as e:
             raise CliError(f"--name-regex is not a valid regular expression: {e}") from None
     return filters.Filters(
-        min_rating=min_rating, max_rating=max_rating, min_reviews=min_reviews, max_reviews=max_reviews,
-        types=list(types), exclude_types=list(exclude_types), open_only=open_only, name_regex=name_regex,
+        min_rating=min_rating,
+        max_rating=max_rating,
+        min_reviews=min_reviews,
+        max_reviews=max_reviews,
+        types=list(types),
+        exclude_types=list(exclude_types),
+        open_only=open_only,
+        name_regex=name_regex,
     )
 
 
 def filter_options(f: Callable) -> Callable:
     return _option_group(
         "flt",
-        ["min_rating", "max_rating", "min_reviews", "max_reviews", "types", "exclude_types", "open_only",
-         "name_regex"],
         [
-            click.option("--min-rating", "min_rating", type=float,
-                         help="Keep rating >= this (exact, inclusive)."),
-            click.option("--max-rating", "max_rating", type=float,
-                         help="Keep rating <= this (exact, inclusive)."),
+            "min_rating",
+            "max_rating",
+            "min_reviews",
+            "max_reviews",
+            "types",
+            "exclude_types",
+            "open_only",
+            "name_regex",
+        ],
+        [
+            click.option(
+                "--min-rating", "min_rating", type=float, help="Keep rating >= this (exact, inclusive)."
+            ),
+            click.option(
+                "--max-rating", "max_rating", type=float, help="Keep rating <= this (exact, inclusive)."
+            ),
             click.option("--min-reviews", "min_reviews", type=int, help="Keep review count >= this."),
             click.option("--max-reviews", "max_reviews", type=int, help="Keep review count <= this."),
-            click.option("--type", "types", multiple=True, metavar="TYPE",
-                         help="Keep places of this Google type, e.g. bakery. Repeatable (any of)."),
-            click.option("--exclude-type", "exclude_types", multiple=True, metavar="TYPE",
-                         help="Drop places of this type. Repeatable."),
+            click.option(
+                "--type",
+                "types",
+                multiple=True,
+                metavar="TYPE",
+                help="Keep places of this Google type, e.g. bakery. Repeatable (any of).",
+            ),
+            click.option(
+                "--exclude-type",
+                "exclude_types",
+                multiple=True,
+                metavar="TYPE",
+                help="Drop places of this type. Repeatable.",
+            ),
             click.option("--open-only", "open_only", is_flag=True, help="Drop permanently closed places."),
-            click.option("--name-regex", "name_regex", metavar="REGEX",
-                         help="Keep places whose name matches this case-insensitive regex."),
+            click.option(
+                "--name-regex",
+                "name_regex",
+                metavar="REGEX",
+                help="Keep places whose name matches this case-insensitive regex.",
+            ),
         ],
         _build_filters,
     )(f)
@@ -226,10 +276,22 @@ def ranking_options(default_top: int | None = 20) -> Callable:
         "rk",
         ["objective", "top"],
         [
-            click.option("--objective", "objective", type=click.Choice(list(scoring.OBJECTIVES)),
-                         default="best", show_default=True, help=f"How to rank. {objectives}"),
-            click.option("--top", "top", type=click.IntRange(min=1), default=default_top,
-                         show_default=default_top is not None, help="How many results to show."),
+            click.option(
+                "--objective",
+                "objective",
+                type=click.Choice(list(scoring.OBJECTIVES)),
+                default="best",
+                show_default=True,
+                help=f"How to rank. {objectives}",
+            ),
+            click.option(
+                "--top",
+                "top",
+                type=click.IntRange(min=1),
+                default=default_top,
+                show_default=default_top is not None,
+                help="How many results to show.",
+            ),
         ],
         Ranking,
     )
@@ -254,20 +316,36 @@ def cost_options(f: Callable) -> Callable:
         "cost",
         ["cost_mode", "max_usd"],
         [
-            click.option("--cost", "cost_mode", type=click.Choice(["free", "quality"]), default="free",
-                         show_default=True,
-                         help="free: refuse any request that would cost money and keep 10% headroom on "
-                              "free allowances. quality: allow paid requests up to --max-usd."),
-            click.option("--max-usd", "max_usd", type=float, metavar="USD",
-                         help="Spending authorised for this run; only with --cost quality."),
+            click.option(
+                "--cost",
+                "cost_mode",
+                type=click.Choice(["free", "quality"]),
+                default="free",
+                show_default=True,
+                help="free: refuse any request that would cost money and keep 10% headroom on "
+                "free allowances. quality: allow paid requests up to --max-usd.",
+            ),
+            click.option(
+                "--max-usd",
+                "max_usd",
+                type=float,
+                metavar="USD",
+                help="Spending authorised for this run; only with --cost quality.",
+            ),
         ],
         _build_cost,
     )(f)
 
 
 def format_option(f: Callable) -> Callable:
-    return click.option("--format", "fmt", type=click.Choice(["json", "md"]), default="json",
-                        show_default=True, help="json: one JSON document. md: a markdown report.")(f)
+    return click.option(
+        "--format",
+        "fmt",
+        type=click.Choice(["json", "md"]),
+        default="json",
+        show_default=True,
+        help="json: one JSON document. md: a markdown report.",
+    )(f)
 
 
 def make_budget(cost: Cost) -> Budget:
@@ -294,8 +372,11 @@ def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BB
         elif name == "dataforseo":
             out.append(DataForSEOProvider(budget))
         elif name == "sim":
-            out.append(SimProvider(budget, area=bbox or config.SIM_AREA, n_places=SIM_WORLD_PLACES,
-                                   seed=SIM_WORLD_SEED))
+            out.append(
+                SimProvider(
+                    budget, area=bbox or config.SIM_AREA, n_places=SIM_WORLD_PLACES, seed=SIM_WORLD_SEED
+                )
+            )
         else:
             raise CliError(f"unknown provider {name!r}")
     return out
@@ -392,8 +473,14 @@ def _next_steps(run_id: str, objective: str, coverage: dict[str, Any] | None, de
 
 
 def _results_doc(
-    run_id: str, places: dict[str, Place], flt: filters.Filters, rk: Ranking, *,
-    coverage: dict[str, Any] | None, budget: dict[str, Any] | None, depth: str | None,
+    run_id: str,
+    places: dict[str, Place],
+    flt: filters.Filters,
+    rk: Ranking,
+    *,
+    coverage: dict[str, Any] | None,
+    budget: dict[str, Any] | None,
+    depth: str | None,
 ) -> dict[str, Any]:
     kept = filters.apply(places.values(), flt)
     ranked = scoring.rank(kept, rk.objective, top=rk.top)
@@ -513,34 +600,69 @@ def area(name: str) -> None:
 
 
 @main.command()
-@click.option("-q", "--query", "queries", multiple=True, metavar="QUERY",
-              help="Keyword to search; repeatable. 'text:lang' sets the language, e.g. 'مخبز:ar'. "
-                   "Searching each language of a keyword finds places the other misses.")
+@click.option(
+    "-q",
+    "--query",
+    "queries",
+    multiple=True,
+    metavar="QUERY",
+    help="Keyword to search; repeatable. 'text:lang' sets the language, e.g. 'مخبز:ar'. "
+    "Searching each language of a keyword finds places the other misses.",
+)
 @location_options
-@click.option("--depth", type=click.Choice(list(retrieval.DEPTHS)), default=None,
-              help="How hard to look (default standard). A search returns at most 60 results, so crowded "
-                   "areas are split into smaller cells: quick = 1 search; standard/deep/exhaustive split "
-                   "up to 2/4/7 times.")
+@click.option(
+    "--depth",
+    type=click.Choice(list(retrieval.DEPTHS)),
+    default=None,
+    help="How hard to look (default standard). A search returns at most 60 results, so crowded "
+    "areas are split into smaller cells: quick = 1 search; standard/deep/exhaustive split "
+    "up to 2/4/7 times.",
+)
 @cost_options
-@click.option("--provider", "providers", multiple=True, type=click.Choice(SEARCH_PROVIDERS),
-              help="Data source; repeatable (default google). sim is an offline simulator: free, no key.")
-@click.option("--tier", type=click.Choice(["ids", "pro", "enterprise"]), default=None,
-              help=f"Google only (default enterprise). Selects the billed field set: ids "
-                   f"({SKUS['google.text_search.ids'].note}, free), pro "
-                   f"({SKUS['google.text_search.pro'].free_units:g} free calls/month), enterprise "
-                   f"({SKUS['google.text_search.enterprise'].free_units:g} free calls/month, adds rating and "
-                   "review count).")
-@click.option("--max-tasks", type=click.IntRange(min=1), default=None,
-              help="Override the depth's ceiling on searches in this run.")
-@click.option("--resume", "resume_id", metavar="RUN_ID",
-              help="Continue a stored run: finished searches are replayed for free, -q/--depth/--provider "
-                   "default to the run's own.")
+@click.option(
+    "--provider",
+    "providers",
+    multiple=True,
+    type=click.Choice(SEARCH_PROVIDERS),
+    help="Data source; repeatable (default google). sim is an offline simulator: free, no key.",
+)
+@click.option(
+    "--tier",
+    type=click.Choice(["ids", "pro", "enterprise"]),
+    default=None,
+    help=f"Google only (default enterprise). Selects the billed field set: ids "
+    f"({SKUS['google.text_search.ids'].note}, free), pro "
+    f"({SKUS['google.text_search.pro'].free_units:g} free calls/month), enterprise "
+    f"({SKUS['google.text_search.enterprise'].free_units:g} free calls/month, adds rating and "
+    "review count).",
+)
+@click.option(
+    "--max-tasks",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Override the depth's ceiling on searches in this run.",
+)
+@click.option(
+    "--resume",
+    "resume_id",
+    metavar="RUN_ID",
+    help="Continue a stored run: finished searches are replayed for free, -q/--depth/--provider "
+    "default to the run's own.",
+)
 @filter_options
 @ranking_options(20)
 @format_option
 def search(
-    queries: tuple[str, ...], loc: Location, depth: str | None, cost: Cost, providers: tuple[str, ...],
-    tier: str | None, max_tasks: int | None, resume_id: str | None, flt: filters.Filters, rk: Ranking,
+    queries: tuple[str, ...],
+    loc: Location,
+    depth: str | None,
+    cost: Cost,
+    providers: tuple[str, ...],
+    tier: str | None,
+    max_tasks: int | None,
+    resume_id: str | None,
+    flt: filters.Filters,
+    rk: Ranking,
     fmt: str,
 ) -> None:
     """Discover places for keywords in an area, then filter and rank them.
@@ -554,8 +676,10 @@ def search(
     """
     purged = store.purge(config.state_dir(), older_than_days=config.retention_days())
     if purged:
-        warn(f"purged {len(purged)} run(s) past the {config.retention_days():g}-day retention: "
-             + ", ".join(purged))
+        warn(
+            f"purged {len(purged)} run(s) past the {config.retention_days():g}-day retention: "
+            + ", ".join(purged)
+        )
 
     run = _open_run(resume_id) if resume_id else None
     spec = run.spec if run else {}
@@ -582,8 +706,15 @@ def search(
         bbox = config.SIM_AREA
     usable = _usable(build_providers(names, budget, tier, bbox))
 
-    wanted = {"queries": qkeys, "bbox": bbox.key(), "depth": depth_name, "providers": names,
-              "cost": cost.mode, "tier": tier, "area": label or spec.get("area")}
+    wanted = {
+        "queries": qkeys,
+        "bbox": bbox.key(),
+        "depth": depth_name,
+        "providers": names,
+        "cost": cost.mode,
+        "tier": tier,
+        "area": label or spec.get("area"),
+    }
     if run is None:
         run = RunStore.create(config.state_dir(), wanted)
     depth_cfg = retrieval.DEPTHS[depth_name]
@@ -595,8 +726,9 @@ def search(
     )
     coverage = retrieval.coverage_summary(result)
     _touch_spec(run, **wanted, coverage=coverage)
-    doc = _results_doc(run.run_id, run.places(), flt, rk, coverage=coverage, budget=budget.summary(),
-                       depth=depth_name)
+    doc = _results_doc(
+        run.run_id, run.places(), flt, rk, coverage=coverage, budget=budget.summary(), depth=depth_name
+    )
     _output(doc, fmt)
 
 
@@ -609,8 +741,9 @@ def rank(run_id: str, flt: filters.Filters, rk: Ranking, fmt: str) -> None:
     """Re-filter and re-rank a stored run. Cost: free, makes no API call."""
     run = _open_run(run_id)
     spec = run.spec
-    doc = _results_doc(run_id, run.places(), flt, rk, coverage=spec.get("coverage"), budget=None,
-                       depth=spec.get("depth"))
+    doc = _results_doc(
+        run_id, run.places(), flt, rk, coverage=spec.get("coverage"), budget=None, depth=spec.get("depth")
+    )
     _output(doc, fmt)
 
 
@@ -637,8 +770,14 @@ def followups(run_id: str) -> None:
 
 @main.command()
 @location_options
-@click.option("--type", "types", multiple=True, required=True, metavar="TYPE",
-              help="Google place type, e.g. bakery. Repeatable.")
+@click.option(
+    "--type",
+    "types",
+    multiple=True,
+    required=True,
+    metavar="TYPE",
+    help="Google place type, e.g. bakery. Repeatable.",
+)
 @click.option("--min-rating", type=float, help="Count only places rated >= this.")
 @click.option("--max-rating", type=float, help="Count only places rated <= this.")
 def census(loc: Location, types: tuple[str, ...], min_rating: float | None, max_rating: float | None) -> None:
@@ -657,21 +796,38 @@ def census(loc: Location, types: tuple[str, ...], min_rating: float | None, max_
         stopped = None
     except BudgetExceeded as e:
         count, stopped = None, str(e)
-    emit({"count": count, "filter": used, "bbox": bbox.key(), "stopped": stopped,
-          "note": "Counts may be cached for 30 days under the Maps terms."})
+    emit(
+        {
+            "count": count,
+            "filter": used,
+            "bbox": bbox.key(),
+            "stopped": stopped,
+            "note": "Counts may be cached for 30 days under the Maps terms.",
+        }
+    )
 
 
 @main.command("enumerate")
 @location_options
-@click.option("--type", "types", multiple=True, required=True, metavar="TYPE",
-              help="Google place type, e.g. bakery. Repeatable.")
+@click.option(
+    "--type",
+    "types",
+    multiple=True,
+    required=True,
+    metavar="TYPE",
+    help="Google place type, e.g. bakery. Repeatable.",
+)
 @click.option("--min-rating", type=float, help="List only places rated >= this.")
 @click.option("--max-rating", type=float, help="List only places rated <= this.")
 @cost_options
 @click.option("--into", "into_id", metavar="RUN_ID", help="Add the IDs to this run instead of a new one.")
 def enumerate_cmd(
-    loc: Location, types: tuple[str, ...], min_rating: float | None, max_rating: float | None,
-    cost: Cost, into_id: str | None,
+    loc: Location,
+    types: tuple[str, ...],
+    min_rating: float | None,
+    max_rating: float | None,
+    cost: Cost,
+    into_id: str | None,
 ) -> None:
     """List place IDs of a type by exact rating bounds. Cost: Google Places Aggregate calls.
 
@@ -684,18 +840,31 @@ def enumerate_cmd(
         raise CliError(NO_LOCATION)
     agg = _single("google_aggregate", budget, None, bbox)
     found = agg.enumerate(bbox, types=list(types), min_rating=min_rating, max_rating=max_rating)
-    run = _open_run(into_id) if into_id else RunStore.create(
-        config.state_dir(),
-        {"queries": [], "types": list(types), "bbox": bbox.key(), "depth": None,
-         "providers": ["google_aggregate"], "cost": cost.mode, "tier": None},
+    run = (
+        _open_run(into_id)
+        if into_id
+        else RunStore.create(
+            config.state_dir(),
+            {
+                "queries": [],
+                "types": list(types),
+                "bbox": bbox.key(),
+                "depth": None,
+                "providers": ["google_aggregate"],
+                "cost": cost.mode,
+                "tier": None,
+            },
+        )
     )
     tag = "type:" + ",".join(types)
     lo, hi = ("" if v is None else v for v in (min_rating, max_rating))
     key = f"google_aggregate|{','.join(types)}|{bbox.key()}|{lo}|{hi}"
     run.record(
         key,
-        [Place(pid, hits=[Hit(provider="google_aggregate", query=tag, cell=bbox.key())])
-         for pid in found.place_ids],
+        [
+            Place(pid, hits=[Hit(provider="google_aggregate", query=tag, cell=bbox.key())])
+            for pid in found.place_ids
+        ],
         saturated=False,
     )
     emit(
@@ -715,8 +884,13 @@ def enumerate_cmd(
 @main.command()
 @click.argument("run_id")
 @click.option("--missing", is_flag=True, help="Fetch every place that has no name yet (ID-only places).")
-@click.option("--tier", type=click.Choice(["ids", "pro", "enterprise"]), default="enterprise",
-              show_default=True, help="Billed field set; enterprise adds rating and review count.")
+@click.option(
+    "--tier",
+    type=click.Choice(["ids", "pro", "enterprise"]),
+    default="enterprise",
+    show_default=True,
+    help="Billed field set; enterprise adds rating and review count.",
+)
 @cost_options
 @filter_options
 @ranking_options(None)
@@ -755,9 +929,18 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
         run.record(f"google_details|{p.place_id}|{tier}", [got], saturated=False)
         fetched += 1
         warn(f"[{fetched}/{len(todo)}] details {p.place_id}")
-    emit({"run_id": run_id, "tier": tier, "fetched": fetched, "remaining": len(todo) - fetched,
-          "stopped": stopped, "errors": errors, "budget": budget.summary(),
-          "next": [f"maps rank {run_id}"]})
+    emit(
+        {
+            "run_id": run_id,
+            "tier": tier,
+            "fetched": fetched,
+            "remaining": len(todo) - fetched,
+            "stopped": stopped,
+            "errors": errors,
+            "budget": budget.summary(),
+            "next": [f"maps rank {run_id}"],
+        }
+    )
 
 
 @main.group("reviews")
@@ -770,10 +953,21 @@ def reviews_group() -> None:
 @filter_options
 @ranking_options(10)
 @cost_options
-@click.option("--provider", "provider", type=click.Choice(SEARCH_PROVIDERS), default="google",
-              show_default=True, help="Where to fetch reviews from (sim is offline and free).")
-@click.option("--limit", type=click.IntRange(min=1), default=5, show_default=True,
-              help="Reviews per place (Google returns at most 5).")
+@click.option(
+    "--provider",
+    "provider",
+    type=click.Choice(SEARCH_PROVIDERS),
+    default="google",
+    show_default=True,
+    help="Where to fetch reviews from (sim is offline and free).",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=5,
+    show_default=True,
+    help="Reviews per place (Google returns at most 5).",
+)
 def reviews_fetch(
     run_id: str, flt: filters.Filters, rk: Ranking, cost: Cost, provider: str, limit: int
 ) -> None:
@@ -807,8 +1001,17 @@ def reviews_fetch(
             run.add_reviews(p.place_id, got)
         done.append({"place_id": p.place_id, "name": p.name, "reviews": len(got)})
         warn(f"[{len(done)}/{len(todo)}] {p.name or p.place_id}: {len(got)} reviews")
-    emit({"run_id": run_id, "provider": provider, "places": done, "stopped": stopped, "errors": errors,
-          "budget": budget.summary(), "next": [f'maps reviews search {run_id} "your phrase"']})
+    emit(
+        {
+            "run_id": run_id,
+            "provider": provider,
+            "places": done,
+            "stopped": stopped,
+            "errors": errors,
+            "budget": budget.summary(),
+            "next": [f'maps reviews search {run_id} "your phrase"'],
+        }
+    )
 
 
 def _places_with_reviews(run: RunStore) -> dict[str, Place]:
@@ -835,8 +1038,13 @@ def reviews_search(
     index = ReviewIndex(with_reviews.values())
     if by_place:
         results = [
-            {"place_id": m.place_id, "name": m.place_name, "score": round(m.score, 3),
-             "n_matches": m.n_matches, "best": render.review_block(m.best, m.place_name)}
+            {
+                "place_id": m.place_id,
+                "name": m.place_name,
+                "score": round(m.score, 3),
+                "n_matches": m.n_matches,
+                "best": render.review_block(m.best, m.place_name),
+            }
             for m in index.search_places(query, top=top)
         ]
     else:
@@ -863,8 +1071,13 @@ def reviews_search(
 @reviews_group.command("integrity")
 @click.argument("run_id")
 @click.option("--place", "place_ids", multiple=True, metavar="PLACE_ID", help="Place to check; repeatable.")
-@click.option("--top", type=click.IntRange(min=1), default=10, show_default=True,
-              help="Without --place: check the top N best-ranked places that have reviews.")
+@click.option(
+    "--top",
+    type=click.IntRange(min=1),
+    default=10,
+    show_default=True,
+    help="Without --place: check the top N best-ranked places that have reviews.",
+)
 def reviews_integrity(run_id: str, place_ids: tuple[str, ...], top: int) -> None:
     """Signals that a place's reviews may be manipulated. Cost: free, makes no API call.
 
@@ -879,16 +1092,25 @@ def reviews_integrity(run_id: str, place_ids: tuple[str, ...], top: int) -> None
         chosen = [with_reviews[p] for p in place_ids]
     else:
         chosen = [s.place for s in scoring.rank(list(with_reviews.values()), "best", top=top)]
-    emit({"run_id": run_id,
-          "places": [{"name": p.name, **integrity_report(p)} for p in chosen]})
+    emit({"run_id": run_id, "places": [{"name": p.name, **integrity_report(p)} for p in chosen]})
 
 
 @reviews_group.command("contributors")
 @click.argument("run_id")
-@click.option("--liked", "liked", multiple=True, metavar="PLACE_ID",
-              help="Place you like; also list places endorsed by people who endorsed it. Repeatable.")
-@click.option("--min-shared", type=click.IntRange(min=2), default=2, show_default=True,
-              help="Minimum places a reviewer must have reviewed to be listed.")
+@click.option(
+    "--liked",
+    "liked",
+    multiple=True,
+    metavar="PLACE_ID",
+    help="Place you like; also list places endorsed by people who endorsed it. Repeatable.",
+)
+@click.option(
+    "--min-shared",
+    type=click.IntRange(min=2),
+    default=2,
+    show_default=True,
+    help="Minimum places a reviewer must have reviewed to be listed.",
+)
 def reviews_contributors(run_id: str, liked: tuple[str, ...], min_shared: int) -> None:
     """Reviewers who reviewed several places in the run. Cost: free, makes no API call."""
     run = _open_run(run_id)
@@ -919,8 +1141,12 @@ def runs() -> None:
 
 
 @main.command()
-@click.option("--older-than", type=float, metavar="DAYS",
-              help="Delete runs older than this many days (default: the retention window).")
+@click.option(
+    "--older-than",
+    type=float,
+    metavar="DAYS",
+    help="Delete runs older than this many days (default: the retention window).",
+)
 @click.option("--all", "everything", is_flag=True, help="Delete every run and the area cache.")
 def purge(older_than: float | None, everything: bool) -> None:
     """Delete stored run data. Cost: free. Search already purges runs past the retention window."""
@@ -952,8 +1178,13 @@ def eval_sim() -> None:
 
 @eval_group.command("check")
 @click.argument("run_id")
-@click.option("--expect", "expect_file", required=True, type=click.Path(dir_okay=False),
-              help='JSON file {"name": str, "expected_place_ids": [..]}.')
+@click.option(
+    "--expect",
+    "expect_file",
+    required=True,
+    type=click.Path(dir_okay=False),
+    help='JSON file {"name": str, "expected_place_ids": [..]}.',
+)
 def eval_check(run_id: str, expect_file: str) -> None:
     """Score a run against places a good search must find. Cost: free."""
     try:

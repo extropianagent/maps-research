@@ -63,3 +63,17 @@ def test_bbox_drops_places_outside_or_without_coordinates():
     unknown = Place("unk")
     kept = apply([inside, outside, unknown], Filters(bbox=BBox(1, 1, 2, 2)))
     assert [p.place_id for p in kept] == ["in"]
+
+
+def test_active_reports_zero_bounds():
+    assert Filters(min_reviews=0, min_rating=0.0).active() == {"min_reviews": 0, "min_rating": 0.0}
+    assert Filters().active() == {}
+    assert Filters(open_only=True).active() == {"open_only": True}
+
+
+def test_type_matching_ignores_case_spaces_and_hyphens():
+    bakery = Place("x", types=["Bakery"])
+    books = Place("y", types=["Book store"], primary_type="Book-Store")
+    assert [p.place_id for p in apply([bakery, books], Filters(types=["bakery"]))] == ["x"]
+    assert [p.place_id for p in apply([bakery, books], Filters(types=["book_store"]))] == ["y"]
+    assert [p.place_id for p in apply([bakery, books], Filters(exclude_types=["BOOK STORE"]))] == ["x"]

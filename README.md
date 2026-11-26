@@ -66,14 +66,14 @@ Integrity output is evidence to weigh, not a verdict. For real searches you need
 
 Google Maps text search returns at most 60 places per query and area, so a crowded city hides most of its places. This toolkit splits any area that hits the cap into smaller cells and searches each one, repeating down to a depth you choose. It searches each keyword in every language you give it, because the Arabic and English searches return different places. Filters such as "rating at most 4.5" are applied exactly after retrieval, since Google cannot filter that way itself. Every search reports what it covered and which cells were still capped, so a gap is stated rather than hidden.
 
-Benchmark on a simulated city (`uv run maps eval sim`). A depth search is compared with one capped search of the whole area:
+Benchmark on a simulated city (`uv run maps eval sim`). Each row searches in English and Arabic; the third column shows the same search in English only:
 
 | Depth | Recall | Recall, English only | Hidden-gem recall | Searches |
 |---|---|---|---|---|
-| quick | 0.119 | 0.084 | 0.000 | 2.0 |
-| standard | 0.981 | 0.745 | 0.984 | 19.3 |
-| deep | 1.000 | 0.763 | 1.000 | 24.7 |
-| exhaustive | 1.000 | 0.763 | 1.000 | 24.7 |
+| quick | 0.02 | 0.02 | 0.00 | 2 |
+| standard | 0.54 | 0.41 | 0.47 | 38 |
+| deep | 0.99 | 0.75 | 0.99 | 101 |
+| exhaustive | 1.00 | 0.76 | 1.00 | 111 |
 
 These numbers come from a simulated city. They show the method works. They say nothing about how Google behaves.
 

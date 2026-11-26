@@ -96,3 +96,42 @@ def test_unknown_objective_is_an_error():
 def test_an_unranked_sighting_does_not_count_as_visible_in_ordinary_search():
     enumerated = Place("p", hits=[Hit("google_aggregate", "type:bakery", level=0, rank=0)])
     assert visibility(enumerated)["best_top_rank"] is None
+
+
+def unrated_corpus():
+    return [
+        Place("unrated", name="U", rating=None, review_count=None, hits=[hit(0, 1), hit(0, 2, "q2")]),
+        Place("good", name="G", rating=4.6, review_count=12, hits=[hit(0, 3)]),
+        Place("ok", name="O", rating=3.8, review_count=300, hits=[hit(0, 4)]),
+    ]
+
+
+@pytest.mark.parametrize("objective", ["best", "gems", "explore", "hire", "investigate"])
+def test_unrated_places_rank_after_every_rated_place(objective):
+    scored = rank(unrated_corpus(), objective)
+    assert scored[-1].place.place_id == "unrated"
+    assert scored[-1].parts["unrated"] == 1.0
+    assert all("unrated" not in s.parts for s in scored[:-1])
+
+
+def test_unrated_places_are_ordered_among_themselves_by_distinct_queries():
+    places = unrated_corpus() + [
+        Place("u2", rating=None, hits=[hit(0, 1)]),
+        Place("u3", rating=None, hits=[hit(0, 1), hit(0, 1, "a"), hit(0, 1, "b")]),
+    ]
+    for objective in ("best", "hire", "explore"):
+        ids = [s.place.place_id for s in rank(places, objective)]
+        assert ids[2:] == ["u3", "unrated", "u2"], objective
+
+
+def test_find_is_unchanged_by_missing_ratings():
+    scored = rank(unrated_corpus(), "find")
+    assert scored[0].place.place_id == "unrated"  # two distinct queries
+    assert all("unrated" not in s.parts for s in scored)
+
+
+def test_hire_treats_unknown_review_count_as_no_evidence():
+    scored = {
+        s.place.place_id: s for s in rank([Place("r", rating=4.5, review_count=None, hits=[hit()])], "hire")
+    }
+    assert scored["r"].parts["uncertainty"] == pytest.approx(0.5)

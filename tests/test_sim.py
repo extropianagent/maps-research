@@ -44,7 +44,12 @@ def test_hits_are_tagged_with_provider_query_cell_level_and_rank():
     for i, p in enumerate(page.places, 1):
         (h,) = p.hits
         assert (h.provider, h.query, h.language, h.cell, h.level, h.rank) == (
-            "sim", "bakery", "en", cell.key(), 1, i,
+            "sim",
+            "bakery",
+            "en",
+            cell.key(),
+            1,
+            i,
         )
         assert cell.contains(p.lat, p.lng)
 
@@ -83,10 +88,7 @@ def test_a_manipulated_place_has_a_burst_of_short_five_star_one_review_authors()
     assert sim.manipulated_ids
     pid = sorted(sim.manipulated_ids)[0]
     revs = sim.reviews(pid, limit=30)
-    burst = [
-        r for r in revs
-        if r.rating == 5 and len(r.text) < 15 and r.author_review_count == 1
-    ]
+    burst = [r for r in revs if r.rating == 5 and len(r.text) < 15 and r.author_review_count == 1]
     assert len(burst) >= 12
     times = sorted(datetime.fromisoformat(r.published) for r in burst)
     assert (times[-1] - times[0]).days <= 5

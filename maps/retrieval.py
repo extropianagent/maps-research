@@ -15,8 +15,9 @@ search never claims coverage it did not achieve.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from .budget import BudgetExceeded
 from .geography import BBox
@@ -80,6 +81,10 @@ def discover(
     """
     result = DiscoveryResult()
     search_kwargs = search_kwargs or {}
+    # Searches made with different filters are different searches: never replay one for the other.
+    kwargs_key = (
+        "|" + ",".join(f"{k}={v!r}" for k, v in sorted(search_kwargs.items())) if search_kwargs else ""
+    )
     queue: deque[tuple[Provider, Query, BBox, int]] = deque(
         (p, q, area, 0) for q in queries for p in providers
     )
@@ -100,7 +105,7 @@ def discover(
             result.unresolved.append({**gap, "reason": "not searched"})
             continue
 
-        key = f"{provider.name}|{query.key()}|{cell.key()}|{depth.max_results}"
+        key = f"{provider.name}|{query.key()}|{cell.key()}|{depth.max_results}{kwargs_key}"
         record = store.done(key) if store else None
         if record is not None:
             places, saturated = [Place.from_dict(p.to_dict()) for p in record.places], record.saturated
@@ -133,7 +138,9 @@ def discover(
                 if page.budget_exhausted:
                     exhausted[provider.name] = page.stopped_early
                 else:
-                    result.errors.append(f"{provider.name} '{query.key()}' @ {cell.key()}: {page.stopped_early}")
+                    result.errors.append(
+                        f"{provider.name} '{query.key()}' @ {cell.key()}: {page.stopped_early}"
+                    )
             if store:
                 store.record(key, places, saturated=saturated)
             if progress:
@@ -171,7 +178,9 @@ def coverage_summary(result: DiscoveryResult) -> dict[str, Any]:
     }
 
 
-def suggest_followups(places: list[Place], queries: list[Query], *, top: int = 8) -> dict[str, list[tuple[str, int]]]:
+def suggest_followups(
+    places: list[Place], queries: list[Query], *, top: int = 8
+) -> dict[str, list[tuple[str, int]]]:
     """Recursive discovery: what do the results suggest searching for next?
 
     Returns frequent primary types and name tokens that the queries so far did

@@ -113,7 +113,7 @@ class DataForSEOProvider:
     # -- Provider protocol --------------------------------------------------------------------
 
     def text_search(
-        self, query: Query, *, bbox: BBox | None, level: int = 0, max_results: int = 60
+        self, query: Query, *, bbox: BBox | None, level: int = 0, max_results: int = 60, **_: Any
     ) -> SearchPage:
         self.budget.charge("dataforseo.maps_search")
         task: dict[str, Any] = {"keyword": query.text, "depth": max_results}
@@ -175,8 +175,9 @@ class DataForSEOProvider:
         }
         if language:
             body["language_code"] = language
-        post = self._task(self._call("POST", "/business_data/google/reviews/task_post", [body]),
-                          allow_pending=True)
+        post = self._task(
+            self._call("POST", "/business_data/google/reviews/task_post", [body]), allow_pending=True
+        )
         task_id = post.get("id")
         if not task_id:
             raise ProviderError("dataforseo: task_post returned no task id")
@@ -188,7 +189,10 @@ class DataForSEOProvider:
             if task.get("status_code") == OK and task.get("result"):
                 break
             if waited >= self.poll_timeout:
-                raise ProviderError("dataforseo: reviews task not ready before timeout")
+                raise ProviderError(
+                    f"dataforseo: reviews task {task_id} not ready before timeout "
+                    "(already paid for; fetch it later with that task id)"
+                )
             self._sleep(self.poll_interval)
             waited += self.poll_interval
         items = task["result"][0].get("items") or []

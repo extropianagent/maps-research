@@ -27,7 +27,11 @@ CATEGORIES: dict[str, tuple[float, list[str], list[str], str, list[str]]] = {
     "bakery": (0.40, ["bakery"], ["مخبز"], "bakery", ["bakery", "food", "store"]),
     "cafe": (0.25, ["cafe", "coffee"], ["مقهى"], "cafe", ["cafe", "food", "establishment"]),
     "tile installer": (
-        0.20, ["tile", "tile installer"], ["بلاط"], "contractor", ["contractor", "general_contractor"],
+        0.20,
+        ["tile", "tile installer"],
+        ["بلاط"],
+        "contractor",
+        ["contractor", "general_contractor"],
     ),
     "bookstore": (0.15, ["bookstore", "book shop"], ["مكتبة"], "book_store", ["book_store", "store"]),
 }
@@ -35,8 +39,11 @@ CATEGORIES: dict[str, tuple[float, list[str], list[str], str, list[str]]] = {
 PHRASES: dict[str, dict[str, dict[str, list[str]]]] = {
     "bakery": {
         "en": {
-            "pos": ["Fresh bread every morning, lovely staff.", "Best croissants in the area.",
-                    "Warm, fairly priced and always fresh."],
+            "pos": [
+                "Fresh bread every morning, lovely staff.",
+                "Best croissants in the area.",
+                "Warm, fairly priced and always fresh.",
+            ],
             "neg": ["Bread was stale and the line was slow.", "Overpriced for what you get."],
         },
         "ar": {
@@ -46,8 +53,11 @@ PHRASES: dict[str, dict[str, dict[str, list[str]]]] = {
     },
     "cafe": {
         "en": {
-            "pos": ["Great coffee and a quiet place to work.", "Friendly baristas, good espresso.",
-                    "Cosy seats and tasty pastries."],
+            "pos": [
+                "Great coffee and a quiet place to work.",
+                "Friendly baristas, good espresso.",
+                "Cosy seats and tasty pastries.",
+            ],
             "neg": ["Coffee arrived cold and the place was noisy.", "Long wait and rude service."],
         },
         "ar": {
@@ -57,8 +67,11 @@ PHRASES: dict[str, dict[str, dict[str, list[str]]]] = {
     },
     "tile installer": {
         "en": {
-            "pos": ["Neat tiling work, finished on time.", "Careful, tidy and honest about the price.",
-                    "Our bathroom floor looks perfect."],
+            "pos": [
+                "Neat tiling work, finished on time.",
+                "Careful, tidy and honest about the price.",
+                "Our bathroom floor looks perfect.",
+            ],
             "neg": ["Uneven tiles and he never came back to fix them.", "Went over budget and late."],
         },
         "ar": {
@@ -68,8 +81,11 @@ PHRASES: dict[str, dict[str, dict[str, list[str]]]] = {
     },
     "bookstore": {
         "en": {
-            "pos": ["Wide selection and helpful staff.", "A calm place to browse for hours.",
-                    "Found a rare title here."],
+            "pos": [
+                "Wide selection and helpful staff.",
+                "A calm place to browse for hours.",
+                "Found a rare title here.",
+            ],
             "neg": ["Hard to find anything, books not organised.", "Rude owner and high prices."],
         },
         "ar": {
@@ -182,8 +198,7 @@ class SimProvider:
     ) -> SearchPage:
         self.budget.charge("sim.search")
         candidates = [
-            p for p in self.world
-            if self.matches(p, query) and (bbox is None or bbox.contains(p.lat, p.lng))
+            p for p in self.world if self.matches(p, query) and (bbox is None or bbox.contains(p.lat, p.lng))
         ]
         candidates.sort(key=lambda p: (-self._prominence[p.place_id], p.place_id))
         returned = candidates[: min(max_results, SEARCH_CAP)]

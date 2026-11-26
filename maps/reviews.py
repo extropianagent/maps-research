@@ -10,9 +10,10 @@ import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from maps.models import Place, Review
 
@@ -20,6 +21,7 @@ from maps.models import Place, Review
 
 _ARABIC_DIACRITICS = re.compile("[ؐ-ًؚ-ٰٟۖ-ۭـ]")
 _ARABIC_FOLD = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ى": "ي", "ة": "ه"})
+_ARABIC_ARTICLES = ("وال", "بال", "كال", "فال", "لل", "ال")  # longest first
 _SPLIT = re.compile(r"[\W_]+", re.UNICODE)
 
 
@@ -29,7 +31,15 @@ def tokenize(text: str) -> list[str]:
         return []
     text = unicodedata.normalize("NFKC", text).casefold()
     text = _ARABIC_DIACRITICS.sub("", text).translate(_ARABIC_FOLD)
-    return [t for t in _SPLIT.split(text) if len(t) > 1]
+    return [_strip_article(t) for t in _SPLIT.split(text) if len(t) > 1]
+
+
+def _strip_article(token: str) -> str:
+    """Drop an Arabic definite article (with its one-letter clitics) when 3+ letters remain."""
+    for prefix in _ARABIC_ARTICLES:
+        if token.startswith(prefix) and len(token) - len(prefix) >= 3:
+            return token[len(prefix) :]
+    return token
 
 
 # --- BM25 search -------------------------------------------------------------------------------
@@ -168,7 +178,7 @@ def _parse_ts(value: str | None) -> datetime | None:
         ts = datetime.fromisoformat(value.strip())
     except ValueError:
         return None
-    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+    return ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
 
 
 def _share(num: int, den: int) -> float | None:
@@ -231,22 +241,34 @@ def integrity_report(place: Place) -> dict[str, Any]:
         "owner_reply_share": _share(sum(1 for r in reviews if (r.owner_reply or "").strip()), n),
     }
 
+    # Each flag needs enough of its own denominator; signals are reported regardless.
+    enough = MIN_REVIEWS_FOR_FLAGS
+    texts = [r for r in reviews if r.text and r.text.strip()]
     flags: list[str] = []
-    if n >= MIN_REVIEWS_FOR_FLAGS:
+    if n >= enough:
         s = signals
-        if s["five_star_share"] is not None and s["five_star_share"] >= FIVE_STAR_SHARE_FLAG:
+        if (
+            len(stars) >= enough
+            and s["five_star_share"] is not None
+            and s["five_star_share"] >= FIVE_STAR_SHARE_FLAG
+        ):
             flags.append(f"{s['five_star_share']:.0%} of sampled ratings are 5★")
         if (
-            s["polarization"] is not None
+            len(stars) >= enough
+            and s["polarization"] is not None
             and s["polarization"] >= POLARIZATION_FLAG
             and (s["five_star_share"] or 0) >= POLARIZATION_MIN_EACH_SIDE
             and (s["one_star_share"] or 0) >= POLARIZATION_MIN_EACH_SIDE
         ):
             flags.append(f"polarised ratings: {s['polarization']:.0%} are 1★ or 5★")
         textless = s["textless_five_star_share"]
-        if textless is not None and textless >= TEXTLESS_FIVE_STAR_FLAG:
+        if len(five) >= enough and textless is not None and textless >= TEXTLESS_FIVE_STAR_FLAG:
             flags.append(f"{s['textless_five_star_share']:.0%} of 5★ reviews have little or no text")
-        if s["duplicate_text_share"] is not None and s["duplicate_text_share"] >= DUPLICATE_TEXT_FLAG:
+        if (
+            len(texts) >= enough
+            and s["duplicate_text_share"] is not None
+            and s["duplicate_text_share"] >= DUPLICATE_TEXT_FLAG
+        ):
             flags.append(f"{s['duplicate_text_share']:.0%} of review texts are repeated verbatim")
         if (
             s["burst_share"] is not None
@@ -258,11 +280,12 @@ def integrity_report(place: Place) -> dict[str, Any]:
                 f"(span {s['dated_span_days']:.0f} days)"
             )
         if (
-            s["single_review_author_share"] is not None
+            len(counted) >= enough
+            and s["single_review_author_share"] is not None
             and s["single_review_author_share"] >= SINGLE_REVIEW_AUTHOR_FLAG
         ):
             flags.append(f"{s['single_review_author_share']:.0%} of reviewers have only this one review")
-        if s["rating_gap"] is not None and abs(s["rating_gap"]) >= RATING_GAP_CAVEAT:
+        if len(rated) >= enough and s["rating_gap"] is not None and abs(s["rating_gap"]) >= RATING_GAP_CAVEAT:
             flags.append(
                 "sample may be unrepresentative: place rating differs from sample mean by "
                 f"{s['rating_gap']:+.2f}"

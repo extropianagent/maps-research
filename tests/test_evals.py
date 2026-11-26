@@ -40,3 +40,9 @@ def test_expected_recall_arithmetic():
 
 def test_expected_recall_with_nothing_expected_is_perfect():
     assert evals.expected_recall(["a"], []) == {"expected": 0, "found": 0, "recall": 1.0, "missing": []}
+
+
+def test_default_benchmark_world_is_big_enough_to_separate_depths():
+    import inspect
+
+    assert inspect.signature(evals.sim_benchmark).parameters["n_places"].default == 3000

@@ -17,9 +17,17 @@ BBOX = BBox(24.0, 46.0, 25.0, 47.0)
 
 
 def mitem(pid: str | None, lat: float = 24.5, lng: float = 46.5) -> dict:
-    d = {"type": "maps_search", "title": f"T-{pid}", "rating": {"value": 4.2, "votes_count": 33},
-         "latitude": lat, "longitude": lng, "category": "Bakery", "address": "A", "url": "http://s",
-         "phone": "p"}
+    d = {
+        "type": "maps_search",
+        "title": f"T-{pid}",
+        "rating": {"value": 4.2, "votes_count": 33},
+        "latitude": lat,
+        "longitude": lng,
+        "category": "Bakery",
+        "address": "A",
+        "url": "http://s",
+        "phone": "p",
+    }
     if pid:
         d["place_id"] = pid
     return d
@@ -32,8 +40,9 @@ def serp(items: list[dict]) -> dict:
 def make(handler, mode="quality", **kw):
     budget = Budget(Ledger(":memory:"), mode=mode, max_usd=5 if mode == "quality" else 0)
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    p = DataForSEOProvider(budget, login="u", password="PASSWORD", client=client,
-                           sleep=kw.pop("sleep", lambda s: None), **kw)
+    p = DataForSEOProvider(
+        budget, login="u", password="PASSWORD", client=client, sleep=kw.pop("sleep", lambda s: None), **kw
+    )
     return p, budget
 
 
@@ -59,8 +68,9 @@ def test_search_mapping_filter_hits_request():
         seen["body"] = json.loads(req.content)
         seen["path"] = req.url.path
         seen["auth"] = req.headers["authorization"]
-        return httpx.Response(200, json=serp([mitem("ChIJa"), mitem(None), mitem("ChIJo", lat=10),
-                                              mitem("ChIJb", lng=46.7)]))
+        return httpx.Response(
+            200, json=serp([mitem("ChIJa"), mitem(None), mitem("ChIJo", lat=10), mitem("ChIJb", lng=46.7)])
+        )
 
     p, budget = make(handler)
     page = p.text_search(Query("bakery", "ar"), bbox=BBOX, level=1, max_results=20)
@@ -108,9 +118,16 @@ def test_free_mode_refused_before_http():
     assert calls == []
 
 
-REVIEW = {"rating": {"value": 4}, "review_text": "nice", "timestamp": "2022-03-03 08:56:11 +00:00",
-          "profile_name": "Sam", "profile_url": "http://g/c/9", "reviews_count": 12,
-          "owner_answer": "ty", "original_language": "en"}
+REVIEW = {
+    "rating": {"value": 4},
+    "review_text": "nice",
+    "timestamp": "2022-03-03 08:56:11 +00:00",
+    "profile_name": "Sam",
+    "profile_url": "http://g/c/9",
+    "reviews_count": 12,
+    "owner_answer": "ty",
+    "original_language": "en",
+}
 
 
 def test_reviews_post_poll_mapping():
@@ -132,7 +149,13 @@ def test_reviews_post_poll_mapping():
     p, budget = make(handler, sleep=sleeps.append)
     (r,) = p.reviews("ChIJa", limit=3)
     assert (r.text, r.rating, r.language, r.published, r.author, r.author_id) == (
-        "nice", 4, "en", "2022-03-03T08:56:11+00:00", "Sam", "http://g/c/9")
+        "nice",
+        4,
+        "en",
+        "2022-03-03T08:56:11+00:00",
+        "Sam",
+        "http://g/c/9",
+    )
     assert (r.author_review_count, r.owner_reply, r.source) == (12, "ty", "dataforseo")
     assert len(sleeps) == 2 and state["gets"] == 3
     assert budget.run_units["dataforseo.reviews"] == 1
@@ -145,5 +168,23 @@ def test_reviews_poll_timeout():
         return httpx.Response(200, json={"tasks": [{"status_code": 40602}]})
 
     p, _ = make(handler, poll_timeout=10, poll_interval=5)
-    with pytest.raises(ProviderError, match="timeout"):
+    with pytest.raises(ProviderError, match="timeout") as e:
         p.reviews("ChIJa")
+    assert "T1" in str(e.value), "the task id lets the owner fetch the result later instead of paying again"
+
+
+def test_text_search_ignores_extra_keyword_arguments():
+    p, _ = make(lambda r: httpx.Response(200, json=serp([mitem("ChIJ1")])))
+    page = p.text_search(Query("x"), bbox=None, min_rating=4.0, included_type="bakery", tier="pro")
+    assert len(page.places) == 1
+
+
+def test_http_error_does_not_leak_credentials():
+    budget = Budget(Ledger(":memory:"), mode="quality", max_usd=5)
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(401, text="bad login LOGIN-ABC PASS-XYZ"))
+    )
+    p = DataForSEOProvider(budget, login="LOGIN-ABC", password="PASS-XYZ", client=client)
+    with pytest.raises(ProviderError) as e:
+        p.text_search(Query("x"), bbox=None)
+    assert "401" in str(e.value) and "LOGIN-ABC" not in str(e.value) and "PASS-XYZ" not in str(e.value)

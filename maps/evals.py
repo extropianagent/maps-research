@@ -32,7 +32,7 @@ def _recall(found: set[str], truth: set[str]) -> float:
 
 
 def sim_benchmark(
-    *, seeds: tuple[int, ...] = (7, 11, 23), n_places: int = 600, query: str = "bakery"
+    *, seeds: tuple[int, ...] = (7, 11, 23), n_places: int = 3000, query: str = "bakery"
 ) -> list[dict[str, Any]]:
     """Recall and cost per depth, averaged over simulated worlds."""
     twin = _arabic_twin(query)

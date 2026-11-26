@@ -41,9 +41,22 @@ class Review:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Review":
+    def from_dict(cls, d: dict[str, Any]) -> Review:
         known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in d.items() if k in known})
+
+
+def _review_key(r: Review) -> tuple[Any, ...]:
+    """Identity of a review independent of which provider returned it.
+
+    Providers disagree on ids and timestamp precision, so the key is the author's display name
+    plus the text; a textless review falls back to author, day and rating.
+    """
+    author = (r.author or "").strip().casefold()
+    text = " ".join((r.text or "").split()).casefold()
+    if text:
+        return ("t", author, text[:120])
+    return ("n", author, (r.published or "")[:10], r.rating)
 
 
 @dataclass
@@ -69,7 +82,7 @@ class Place:
     def sources(self) -> list[str]:
         return sorted({h.provider for h in self.hits})
 
-    def merge(self, other: "Place") -> None:
+    def merge(self, other: Place) -> None:
         """Fold another sighting of the same place into this one.
 
         Scalar fields keep the first non-empty value; hits and reviews accumulate.
@@ -85,9 +98,9 @@ class Place:
             if t not in self.types:
                 self.types.append(t)
         self.hits.extend(other.hits)
-        seen = {(r.source, r.author_id or r.author, r.published, r.text[:80]) for r in self.reviews}
+        seen = {_review_key(r) for r in self.reviews}
         for r in other.reviews:
-            key = (r.source, r.author_id or r.author, r.published, r.text[:80])
+            key = _review_key(r)
             if key not in seen:
                 self.reviews.append(r)
                 seen.add(key)
@@ -96,7 +109,7 @@ class Place:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Place":
+    def from_dict(cls, d: dict[str, Any]) -> Place:
         d = dict(d)
         hits = [Hit(**h) for h in d.pop("hits", [])]
         reviews = [Review.from_dict(r) for r in d.pop("reviews", [])]
@@ -112,7 +125,7 @@ class Query:
     language: str | None = None
 
     @classmethod
-    def parse(cls, raw: str) -> "Query":
+    def parse(cls, raw: str) -> Query:
         raw = raw.strip()
         if ":" in raw:
             text, _, lang = raw.rpartition(":")

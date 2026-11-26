@@ -61,6 +61,13 @@ def _type_key(place: Place) -> str | None:
 
 
 def _score_one(place: Place, objective: str, prior: float) -> Scored:
+    scored = _score_parts(place, objective, prior)
+    if place.rating is None and objective != "find":
+        scored.parts["unrated"] = 1.0
+    return scored
+
+
+def _score_parts(place: Place, objective: str, prior: float) -> Scored:
     n = place.review_count
     if objective == "best":
         b = bayesian_rating(place.rating, n, prior_mean=prior, prior_weight=20)
@@ -78,7 +85,7 @@ def _score_one(place: Place, objective: str, prior: float) -> Scored:
         )
     if objective in ("hire", "investigate"):
         b = bayesian_rating(place.rating, n, prior_mean=prior, prior_weight=40)
-        unc = 0.5 / math.sqrt(n + 1) if n is not None else 0.0
+        unc = 0.5 / math.sqrt((n or 0) + 1)  # unknown review count = no evidence
         return Scored(place, b - unc, {"bayes": b, "uncertainty": unc})
     # find
     b = bayesian_rating(place.rating, n, prior_mean=prior, prior_weight=20)
@@ -93,6 +100,7 @@ def _explore(places: list[Place], prior: float) -> list[Scored]:
     picked_types: dict[str, int] = {}
     out: list[Scored] = []
     while remaining:
+
         def adjusted(p: Place) -> tuple[float, float]:
             key = _type_key(p)
             pen = 0.3 * picked_types.get(key, 0) if key else 0.0
@@ -108,15 +116,29 @@ def _explore(places: list[Place], prior: float) -> list[Scored]:
     return out
 
 
+def _unrated_last(scored: list[Scored]) -> list[Scored]:
+    """Places with no rating cannot be judged: they follow every rated place, widest-found first."""
+    rated = [s for s in scored if "unrated" not in s.parts]
+    unrated = [s for s in scored if "unrated" in s.parts]
+    unrated.sort(key=lambda s: -visibility(s.place)["n_queries"])
+    return rated + unrated
+
+
 def rank(places: list[Place], objective: str, *, top: int | None = None) -> list[Scored]:
     """Rank places best-first for an objective; unknown objectives raise ValueError."""
     if objective not in OBJECTIVES:
         raise ValueError(f"unknown objective {objective!r}; choose from {', '.join(OBJECTIVES)}")
     prior = _prior_mean(places)
     if objective == "explore":
-        scored = _explore(places, prior)
+        rated = [p for p in places if p.rating is not None]
+        scored = _explore(rated, prior)
+        for p in places:
+            if p.rating is None:
+                scored.append(Scored(p, prior, {"bayes": prior, "diversity_penalty": 0.0, "unrated": 1.0}))
+        scored = _unrated_last(scored)
     else:
         scored = [_score_one(p, objective, prior) for p in places]
         # Stable sort; "best" breaks ties toward more reviews.
         scored.sort(key=lambda s: (-s.score, -(s.place.review_count or 0) if objective == "best" else 0))
+        scored = _unrated_last(scored)
     return scored[:top] if top is not None else scored

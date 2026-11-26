@@ -56,9 +56,7 @@ class ApifyProvider:
             raise ProviderError("apify: APIFY_TOKEN is not set")
         url = f"{BASE_URL}/acts/{ACTOR}/run-sync-get-dataset-items"
         try:
-            resp = self._client.post(
-                url, json=payload, headers={"Authorization": f"Bearer {self._token}"}
-            )
+            resp = self._client.post(url, json=payload, headers={"Authorization": f"Bearer {self._token}"})
         except httpx.HTTPError as e:
             raise ProviderError(f"apify: request failed ({type(e).__name__})") from None
         if resp.status_code not in (200, 201):
@@ -74,7 +72,7 @@ class ApifyProvider:
     # -- Provider protocol --------------------------------------------------------------------
 
     def text_search(
-        self, query: Query, *, bbox: BBox | None, level: int = 0, max_results: int = 60
+        self, query: Query, *, bbox: BBox | None, level: int = 0, max_results: int = 60, **_: Any
     ) -> SearchPage:
         self.budget.charge("apify.place", units=max_results)
         payload: dict[str, Any] = {

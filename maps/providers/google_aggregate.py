@@ -75,9 +75,7 @@ class PlacesAggregate:
         }
         if operational_only:
             flt["operatingStatus"] = ["OPERATING_STATUS_OPERATIONAL"]
-        rating = {
-            k: v for k, v in (("minRating", min_rating), ("maxRating", max_rating)) if v is not None
-        }
+        rating = {k: v for k, v in (("minRating", min_rating), ("maxRating", max_rating)) if v is not None}
         if rating:
             flt["ratingFilter"] = rating
         self.budget.charge("google.aggregate")

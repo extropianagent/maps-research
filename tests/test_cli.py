@@ -51,8 +51,21 @@ def sim_search(*extra, q=("bakery",)):
 
 def test_help_documents_every_command_and_its_cost():
     out = run_cli("--help").stdout
-    for cmd in ("doctor", "budget", "area", "search", "rank", "followups", "census", "enumerate",
-                "details", "reviews", "runs", "purge", "eval"):
+    for cmd in (
+        "doctor",
+        "budget",
+        "area",
+        "search",
+        "rank",
+        "followups",
+        "census",
+        "enumerate",
+        "details",
+        "reviews",
+        "runs",
+        "purge",
+        "eval",
+    ):
         assert cmd in out
     for cmd in ("search", "rank", "census", "details"):
         assert "cost" in run_cli(cmd, "--help").stdout.lower()
@@ -268,8 +281,19 @@ def test_conflicting_or_malformed_locations_exit_2():
 
 
 def test_near_and_radius_build_a_box(state):
-    doc = jrun("search", "-q", "bakery", "--provider", "sim", "--depth", "quick",
-               "--near", "24.7,46.7", "--radius", "5000")
+    doc = jrun(
+        "search",
+        "-q",
+        "bakery",
+        "--provider",
+        "sim",
+        "--depth",
+        "quick",
+        "--near",
+        "24.7,46.7",
+        "--radius",
+        "5000",
+    )
     box = BBox.parse(RunStore.open(state, doc["run_id"]).spec["bbox"])
     assert 9000 < box.height_m < 11000
 
@@ -440,8 +464,9 @@ def test_stale_area_cache_is_refreshed(fakes, state):
 
 def test_census_counts_with_rating_bounds(fakes):
     _, agg = fakes
-    doc = jrun("census", "--bbox", "24.5,46.5,24.9,46.9", "--type", "bakery", "--type", "cafe",
-               "--max-rating", "3.5")
+    doc = jrun(
+        "census", "--bbox", "24.5,46.5,24.9,46.9", "--type", "bakery", "--type", "cafe", "--max-rating", "3.5"
+    )
     assert doc["count"] == 42 and doc["filter"]["types"] == ["bakery", "cafe"]
     assert doc["filter"]["max_rating"] == 3.5 and agg.last == (["bakery", "cafe"], None, 3.5)
     run_cli("census", "--bbox", "24.5,46.5,24.9,46.9", expect=2)  # --type is required

@@ -193,8 +193,11 @@ def test_pagination_three_pages_same_body_and_charges():
 
 
 def test_saturated_at_cap_even_without_token():
-    pages = [{"places": ids("a", 20), "token": "T1"}, {"places": ids("b", 20), "token": "T2"},
-             {"places": ids("c", 20)}]
+    pages = [
+        {"places": ids("a", 20), "token": "T1"},
+        {"places": ids("b", 20), "token": "T2"},
+        {"places": ids("c", 20)},
+    ]
     p, _ = make(paged(pages))
     assert p.text_search(Query("x"), bbox=None).saturated
 
@@ -249,11 +252,25 @@ def test_place_mapping_and_hits_rank_across_pages():
     a, z = page.places[0], page.places[-1]
     assert (a.place_id, a.name, a.lat, a.lng) == ("a0", "N-a0", 24.5, 46.5)
     assert (a.rating, a.review_count, a.primary_type, a.types) == (4.4, 12, "bakery", ["bakery", "food"])
-    assert (a.address, a.price_level, a.business_status) == ("1 Main St", "PRICE_LEVEL_MODERATE", "OPERATIONAL")
-    assert (a.website, a.phone, a.maps_url) == ("https://w.example", "012 345", "https://maps.google.com/?cid=a0")
+    assert (a.address, a.price_level, a.business_status) == (
+        "1 Main St",
+        "PRICE_LEVEL_MODERATE",
+        "OPERATIONAL",
+    )
+    assert (a.website, a.phone, a.maps_url) == (
+        "https://w.example",
+        "012 345",
+        "https://maps.google.com/?cid=a0",
+    )
     h = a.hits[0]
     assert (h.provider, h.query, h.language, h.cell, h.level, h.rank) == (
-        "google", "bakery", "en", BBOX.key(), 3, 1)
+        "google",
+        "bakery",
+        "en",
+        BBOX.key(),
+        3,
+        1,
+    )
     assert [pl.hits[0].rank for pl in page.places] == list(range(1, 22))
     assert z.place_id == "z" and z.hits[0].rank == 21
 
@@ -439,10 +456,19 @@ def test_reviews_mapping_prefers_original_text():
     assert len(out) == 2
     r = out[0]
     assert (r.place_id, r.rating, r.text, r.language, r.published) == (
-        "ChIJa", 5, "ممتاز", "ar", "2024-05-01T10:00:00Z")
+        "ChIJa",
+        5,
+        "ممتاز",
+        "ar",
+        "2024-05-01T10:00:00Z",
+    )
     assert (r.author, r.author_id, r.url, r.flag_url, r.source) == (
-        "Sam", "https://maps.google.com/contrib/1", "https://maps.google.com/r/1",
-        "https://maps.google.com/flag/1", "google")
+        "Sam",
+        "https://maps.google.com/contrib/1",
+        "https://maps.google.com/r/1",
+        "https://maps.google.com/flag/1",
+        "google",
+    )
     assert (out[1].text, out[1].language) == ("meh", "en")
     assert budget.run_units == {"google.details.atmosphere": 1}
 
@@ -457,17 +483,27 @@ def test_reviews_none_returned():
 
 def test_resolve_area_success():
     seen: list[httpx.Request] = []
-    body = {"places": [{
-        "id": "ChIJr", "displayName": {"text": "Riyadh"}, "formattedAddress": "Riyadh Saudi Arabia",
-        "location": {"latitude": 24.7, "longitude": 46.7},
-        "viewport": {"low": {"latitude": 24.0, "longitude": 46.0}, "high": {"latitude": 25.0, "longitude": 47.0}},
-    }]}
+    body = {
+        "places": [
+            {
+                "id": "ChIJr",
+                "displayName": {"text": "Riyadh"},
+                "formattedAddress": "Riyadh Saudi Arabia",
+                "location": {"latitude": 24.7, "longitude": 46.7},
+                "viewport": {
+                    "low": {"latitude": 24.0, "longitude": 46.0},
+                    "high": {"latitude": 25.0, "longitude": 47.0},
+                },
+            }
+        ]
+    }
     p, budget = make(lambda r: seen.append(r) or httpx.Response(200, json=body))
     bbox, label = p.resolve_area("Riyadh")
     assert bbox == BBOX and label == "Riyadh, Riyadh Saudi Arabia"
     assert json.loads(seen[0].content) == {"textQuery": "Riyadh", "pageSize": 1}
     assert seen[0].headers["x-goog-fieldmask"] == (
-        "places.id,places.displayName,places.formattedAddress,places.location,places.viewport")
+        "places.id,places.displayName,places.formattedAddress,places.location,places.viewport"
+    )
     assert budget.run_units == {"google.text_search.pro": 1}
 
 

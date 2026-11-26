@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -34,7 +34,7 @@ def test_tokenize_arabic_normalisation():
     assert tokenize("أحمد إبراهيم آمال") == ["احمد", "ابراهيم", "امال"]
     assert tokenize("مستشفى") == ["مستشفي"]
     assert tokenize("جمـــيل") == ["جميل"]
-    assert tokenize("القهوة، رائعة!") == ["القهوه", "رائعه"]
+    assert tokenize("القهوة، رائعة!") == ["قهوه", "رائعه"]
 
 
 def test_tokenize_variants_collide():
@@ -133,7 +133,13 @@ def test_confidence_tiers():
         return integrity_report(place("p", [rv("p", "x", 4) for _ in range(n)]))["confidence"]
 
     assert [conf(0), conf(4), conf(5), conf(19), conf(20), conf(99), conf(100)] == [
-        "none", "none", "low", "low", "medium", "medium", "high",
+        "none",
+        "none",
+        "low",
+        "low",
+        "medium",
+        "medium",
+        "high",
     ]
 
 
@@ -141,8 +147,14 @@ def test_signals_degrade_to_none_without_data():
     rep = integrity_report(place("p", [rv("p", "", None), rv("p", "", None)]))
     s = rep["signals"]
     for key in (
-        "five_star_share", "one_star_share", "polarization", "textless_five_star_share",
-        "duplicate_text_share", "burst_share", "single_review_author_share", "rating_gap",
+        "five_star_share",
+        "one_star_share",
+        "polarization",
+        "textless_five_star_share",
+        "duplicate_text_share",
+        "burst_share",
+        "single_review_author_share",
+        "rating_gap",
     ):
         assert s[key] is None, key
     assert rep["flags"] == []
@@ -203,7 +215,7 @@ def _ts(base: datetime, days: float) -> str:
 
 
 def test_burst_detection():
-    base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2025, 1, 1, tzinfo=UTC)
     days = [0, 1, 2, 3, 4, 5, 100, 200, 300, 400]
     reviews = [rv("p", "fine", 4, published=_ts(base, d)) for d in days]
     rep = integrity_report(place("p", reviews))
@@ -213,7 +225,7 @@ def test_burst_detection():
 
 
 def test_burst_not_flagged_when_spread_or_young():
-    base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2025, 1, 1, tzinfo=UTC)
     spread = [rv("p", "fine", 4, published=_ts(base, 30 * i)) for i in range(10)]
     rep = integrity_report(place("p", spread))
     assert rep["signals"]["burst_share"] == 0.1
@@ -234,9 +246,10 @@ def test_burst_needs_enough_dated_reviews_and_handles_z_and_garbage():
 
 def test_single_review_author_share():
     reviews = [rv("p", "x", 5, author_review_count=1) for _ in range(3)]
-    reviews += [rv("p", "x", 4, author_review_count=40), rv("p", "x", 4)]
+    reviews += [rv("p", "x", 4, author_review_count=40), rv("p", "x", 4, author_review_count=9)]
+    reviews.append(rv("p", "x", 4))
     rep = integrity_report(place("p", reviews))
-    assert rep["signals"]["single_review_author_share"] == 0.75
+    assert rep["signals"]["single_review_author_share"] == 0.6
     assert any("only this one review" in f for f in rep["flags"])
 
 
@@ -262,12 +275,17 @@ def test_caveat_mentions_partial_sample():
 
 
 def test_healthy_place_has_no_flags():
-    base = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2024, 1, 1, tzinfo=UTC)
     ratings = [5, 4, 4, 3, 5, 4, 2, 4, 5, 3]
     words = "one two three four five six seven eight nine ten".split()
     reviews = [
-        rv("p", f"visit {words[i]} was {'good' if r > 3 else 'mixed'} overall", r,
-           published=_ts(base, 40 * i), author_review_count=10 + i)
+        rv(
+            "p",
+            f"visit {words[i]} was {'good' if r > 3 else 'mixed'} overall",
+            r,
+            published=_ts(base, 40 * i),
+            author_review_count=10 + i,
+        )
         for i, r in enumerate(ratings)
     ]
     rep = integrity_report(place("p", reviews, rating=3.9, review_count=10))
@@ -281,13 +299,30 @@ def test_healthy_place_has_no_flags():
 @pytest.fixture
 def social() -> list[Place]:
     return [
-        place("liked", [rv("liked", "x", 5, author="Ann", author_id="u1"),
-                        rv("liked", "x", 5, author="Bob", author_id="u2"),
-                        rv("liked", "x", 2, author="Cat", author_id="u3")]),
-        place("p1", [rv("p1", "x", 5, author_id="u1"), rv("p1", "x", 4, author="Bob", author_id="u2"),
-                     rv("p1", "x", 5, author="Cat", author_id="u3")]),
-        place("p2", [rv("p2", "x", 4, author="Ann", author_id="u1"), rv("p2", "x", 3, author_id="u2"),
-                     rv("p2", "x", 5, author="Anon")]),
+        place(
+            "liked",
+            [
+                rv("liked", "x", 5, author="Ann", author_id="u1"),
+                rv("liked", "x", 5, author="Bob", author_id="u2"),
+                rv("liked", "x", 2, author="Cat", author_id="u3"),
+            ],
+        ),
+        place(
+            "p1",
+            [
+                rv("p1", "x", 5, author_id="u1"),
+                rv("p1", "x", 4, author="Bob", author_id="u2"),
+                rv("p1", "x", 5, author="Cat", author_id="u3"),
+            ],
+        ),
+        place(
+            "p2",
+            [
+                rv("p2", "x", 4, author="Ann", author_id="u1"),
+                rv("p2", "x", 3, author_id="u2"),
+                rv("p2", "x", 5, author="Anon"),
+            ],
+        ),
         place("p3", [rv("p3", "x", 5, author="Cat", author_id="u3")]),
     ]
 
@@ -318,3 +353,37 @@ def test_contributor_overlap(social):
     strict = contributor_overlap(social, {"liked"}, min_rating=5)
     assert strict == [{"place_id": "p1", "name": "P1", "supporters": 1, "via": ["u1"]}]
     assert contributor_overlap(social, set()) == []
+
+
+def test_flags_are_gated_by_each_signals_own_denominator():
+    reviews = [
+        rv("p", "", 5, author_review_count=1),
+        rv("p", "a decent place, would come again", 3),
+        rv("p", "so-so coffee and slow service today", 3),
+        rv("p", "fine for a quick stop on the way", 4),
+        rv("p", "average", None),
+    ]
+    rep = integrity_report(place("p", reviews))
+    assert rep["n_reviews"] == 5
+    assert rep["signals"]["textless_five_star_share"] == 1.0  # still reported
+    assert rep["signals"]["single_review_author_share"] == 1.0
+    assert rep["flags"] == []
+
+
+def test_star_share_flags_need_enough_rated_reviews():
+    reviews = [rv("p", "great", 5)] * 4 + [rv("p", "great")] * 4
+    rep = integrity_report(place("p", reviews))
+    assert rep["signals"]["five_star_share"] == 1.0 and rep["flags"] == []
+
+
+def test_tokenize_strips_the_arabic_definite_article():
+    assert tokenize("الخبز") == ["خبز"]
+    assert tokenize("والخبز بالخبز كالخبز فالخبز للخبز") == ["خبز"] * 5
+    assert tokenize("الى") == ["الي"]  # fewer than 3 characters would remain
+    assert tokenize("لله") == ["لله"]
+
+
+def test_arabic_search_matches_with_and_without_the_article():
+    idx = ReviewIndex([place("p", [rv("p", "الخبز طازج جدا", 5)]), place("q", [rv("q", "قهوة عادية", 3)])])
+    assert [m.place_id for m in idx.search("خبز")] == ["p"]
+    assert [m.place_id for m in idx.search("الخبز")] == ["p"]

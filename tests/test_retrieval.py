@@ -1,5 +1,4 @@
 import httpx
-import pytest
 
 from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.geography import BBox
@@ -44,6 +43,8 @@ def test_quick_depth_does_not_subdivide():
     result = discover([p], [Query("bakery")], AREA, DEPTHS["quick"])
     assert result.tasks_run == 1
     assert len(result.places) == DEPTHS["quick"].max_results
+    assert not result.complete
+    assert len(result.unresolved) == 1
 
 
 def test_deeper_search_finds_strictly_more_of_the_city():
@@ -71,7 +72,9 @@ def test_unsaturated_cells_are_not_subdivided():
 
 def test_cells_still_saturated_at_the_depth_limit_are_reported_as_gaps():
     p = sim()
-    result = discover([p], [Query("bakery")], AREA, Depth("shallow", max_level=1, max_results=60, max_tasks=100))
+    result = discover(
+        [p], [Query("bakery")], AREA, Depth("shallow", max_level=1, max_results=60, max_tasks=100)
+    )
     assert result.unresolved, "saturated leaves must be reported, not silently dropped"
 
 
@@ -114,7 +117,9 @@ def test_resuming_a_run_does_not_repeat_completed_searches(tmp_path):
     calls = []
     original = second.text_search
     second.text_search = lambda q, **kw: (calls.append(kw["bbox"].key()), original(q, **kw))[1]
-    resumed = discover([second], [Query("bakery")], AREA, DEPTHS["deep"], store=RunStore.open(tmp_path, store.run_id))
+    resumed = discover(
+        [second], [Query("bakery")], AREA, DEPTHS["deep"], store=RunStore.open(tmp_path, store.run_id)
+    )
 
     assert resumed.tasks_resumed == 3
     assert AREA.key() not in calls, "the top-level search was already done"
@@ -183,7 +188,9 @@ def test_http_error_on_page_2_keeps_page_1_records_error_and_is_not_charged_agai
     def handler(req):
         if b"pageToken" in req.content:
             return httpx.Response(500, text="down")
-        return httpx.Response(200, json={"places": [_gplace(f"a{i}") for i in range(20)], "nextPageToken": "T"})
+        return httpx.Response(
+            200, json={"places": [_gplace(f"a{i}") for i in range(20)], "nextPageToken": "T"}
+        )
 
     bud = budget()
     store = RunStore.create(tmp_path, {})
@@ -195,6 +202,51 @@ def test_http_error_on_page_2_keeps_page_1_records_error_and_is_not_charged_agai
     charged = bud.ledger.units("google.text_search.enterprise")
     assert charged == 2
 
-    again = discover([_google(handler, bud)], [Query("bakery")], AREA, TWO_PAGES, store=RunStore.open(tmp_path, store.run_id))
+    again = discover(
+        [_google(handler, bud)],
+        [Query("bakery")],
+        AREA,
+        TWO_PAGES,
+        store=RunStore.open(tmp_path, store.run_id),
+    )
     assert again.tasks_resumed == 1 and len(again.places) == 20
     assert bud.ledger.units("google.text_search.enterprise") == charged
+
+
+class KwProvider(SimProvider):
+    """Strict signature: accepts only the keyword arguments discover passes."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.seen = []
+
+    def text_search(self, query, *, bbox, level=0, max_results=60, min_rating=None):
+        self.seen.append(min_rating)
+        return super().text_search(query, bbox=bbox, level=level, max_results=max_results)
+
+
+def test_search_kwargs_are_passed_to_the_provider():
+    p = KwProvider(budget(), area=AREA, n_places=50, seed=7)
+    discover([p], [Query("bakery")], AREA, DEPTHS["quick"], search_kwargs={"min_rating": 4.0})
+    assert p.seen == [4.0]
+
+
+def test_checkpoint_key_includes_search_kwargs_so_different_filters_do_not_replay(tmp_path):
+    store = RunStore.create(tmp_path, {})
+    p = KwProvider(budget(), area=AREA, n_places=50, seed=7)
+    discover([p], [Query("bakery")], AREA, DEPTHS["quick"], store=store, search_kwargs={"min_rating": 4.0})
+    again = discover(
+        [p], [Query("bakery")], AREA, DEPTHS["quick"], store=store, search_kwargs={"min_rating": 4.5}
+    )
+    assert again.tasks_resumed == 0 and again.tasks_run == 1
+    same = discover(
+        [p], [Query("bakery")], AREA, DEPTHS["quick"], store=store, search_kwargs={"min_rating": 4.5}
+    )
+    assert same.tasks_resumed == 1
+    plain = discover([p], [Query("bakery")], AREA, DEPTHS["quick"], store=store)
+    assert plain.tasks_resumed == 0
+    import json
+
+    keys = [json.loads(line)["key"] for line in (store.dir / "tasks.jsonl").read_text().splitlines()]
+    assert f"sim|bakery|{AREA.key()}|20" in keys, "no kwargs: the historical key"
+    assert any(k.endswith("|20|min_rating=4.0") for k in keys)

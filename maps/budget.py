@@ -127,7 +127,9 @@ class Budget:
         paid_before = max(0.0, used - free)
         paid_after = max(0.0, used + units - free)
         billable = (paid_after - paid_before) * sku.usd_per_unit
-        credit_left = max(0.0, PROVIDER_FREE_USD.get(sku.provider, 0.0) - self.ledger.provider_usd(sku.provider))
+        credit_left = max(
+            0.0, PROVIDER_FREE_USD.get(sku.provider, 0.0) - self.ledger.provider_usd(sku.provider)
+        )
         return Quote(sku, units, billable, max(0.0, billable - credit_left))
 
     def check(self, sku_name: str, units: float = 1) -> Quote:
@@ -148,8 +150,10 @@ class Budget:
                     "this month (headroom kept for usage this ledger cannot see)."
                 )
             credit = PROVIDER_FREE_USD.get(sku.provider, 0.0)
-            if credit and q.billable_usd and (
-                self.ledger.provider_usd(sku.provider) + q.billable_usd > credit * self.reserve
+            if (
+                credit
+                and q.billable_usd
+                and (self.ledger.provider_usd(sku.provider) + q.billable_usd > credit * self.reserve)
             ):
                 raise BudgetExceeded(
                     f"{sku_name}: reached {self.reserve:.0%} of the ${credit:g} free monthly "
