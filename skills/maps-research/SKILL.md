@@ -77,6 +77,9 @@ the results in importance:
 - Exit code 3, or a refusal starting "Account protection:": the search is over.
   Report what the tool said to the owner and follow `docs/account-protection.md`.
 
+To look at the results again, or with other filters or another ranking, use
+`maps rank RUN` with the brief's filters. It is free and searches nothing.
+
 **Done when** coverage is complete, or each remaining gap is noted for the report.
 
 ## 4. Follow the results
@@ -128,7 +131,8 @@ with its reason, or you can say exactly why the reviews cannot settle it.
 
 ## 6. Report
 
-Copy this template and fill it in. Keep all five bold headings, in this order;
+The filled-in template below is the message the owner receives, on a phone
+or anywhere else. Copy it and fill it in. Keep all five bold headings, in this order;
 write "none" under a heading that has nothing. When the evidence supports no
 recommendation the template still applies: the Answer says so, and Picks lists
 the strongest candidates marked "unverified" with their links.
