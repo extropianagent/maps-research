@@ -1,0 +1,6 @@
+{
+  "name": "example: replace with a real request",
+  "request": "exceptional bakeries in Riyadh, hidden gems, free only",
+  "notes": "Place IDs a good search for this request must find. Add IDs of places you know are good, and places a search missed that you found another way.",
+  "expected_place_ids": []
+}
