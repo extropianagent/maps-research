@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+dist/
+*.egg-info/
+# Runtime state holds Maps content and must never be committed (see docs/permissions.md)
+.state/
+.env
