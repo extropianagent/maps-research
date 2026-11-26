@@ -9,11 +9,15 @@ dependencies = [
     "click>=8.1",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+semantic = ["fastembed>=0.5"]
+
 [project.scripts]
 maps = "maps.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "mcp>=1.2"]
 
 [build-system]
 requires = ["hatchling"]
