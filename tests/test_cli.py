@@ -493,7 +493,7 @@ def test_details_stops_cleanly_on_budget(fakes):
 def test_area_flag_resolves_through_the_cache_and_searches(monkeypatch, fakes):
     google, _ = fakes
 
-    class Sim:
+    class Searcher:
         name = "google"
 
         def __init__(self, budget):
@@ -505,16 +505,15 @@ def test_area_flag_resolves_through_the_cache_and_searches(monkeypatch, fakes):
         def text_search(self, query, *, bbox, level=0, max_results=60):
             return SearchPage([Place("x1", name="X", rating=4.5, review_count=3)], saturated=False)
 
-    real = cli.build_providers
-
     def build(names, budget, tier, bbox):
-        return [google] if names == ["google"] and False else [Sim(budget)]
+        # Area resolution asks for the provider without a box; the search itself always has one.
+        return [google] if bbox is None else [Searcher(budget)]
 
     monkeypatch.setattr(cli, "build_providers", build)
-    monkeypatch.setattr(cli, "_google_for_area", lambda budget: google)
     doc = jrun("search", "-q", "bakery", "--area", "Riyadh", "--depth", "quick")
     assert doc["matched"] == 1 and google.resolved == ["Riyadh"]
-    assert real is not None
+    jrun("search", "-q", "bakery", "--area", "Riyadh", "--depth", "quick")
+    assert google.resolved == ["Riyadh"]  # second search reused the cached area
 
 
 # --- eval -------------------------------------------------------------------------------------
