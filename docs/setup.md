@@ -25,11 +25,14 @@ Required for real searches.
 1. Create a Google Cloud project at https://console.cloud.google.com and attach a billing account. Billing is required even to use the free monthly allowances.
 2. Enable two APIs: "Places API (New)" and "Places Aggregate API".
 3. Create an API key and restrict it to those two APIs.
-4. Set daily quota caps on both APIs: APIs & Services, then the API, then Quotas. This is the hard stop behind the toolkit's own guard. Start with caps that fit inside the monthly free allowances in `maps/pricing.py` (prices checked 2026-11-26, still unconfirmed):
-   - Text Search Enterprise (the default tier): 1,000 free per month. At the guard's 90%, that is 900, or 30 per day. Cap at 30 per day.
-   - Place Details Enterprise + Atmosphere (review fetching): 1,000 free per month. Same arithmetic, 30 per day.
-   - Places Aggregate (`maps census`): 5,000 free per month. 90% is 4,500, or 150 per day. Cap at 150 per day.
-   - If you use `--tier pro` for Text Search: 5,000 free, so 150 per day.
+4. Set daily quota caps on both APIs: APIs & Services, then the API, then Quotas. Google's quotas are per day, not per month, so a daily cap bounds the month at 30 times its value. This is the hard stop behind the toolkit's own guard, and it matters most in cloud sessions, where the toolkit's usage ledger is lost with each container (section 5). Pick one of two positions. The free allowances are from `maps/pricing.py` (checked 2026-11-26, still unconfirmed), and whether the console offers a separate cap per request type is also unconfirmed.
+
+   | Position | Text Search requests/day | Place Details requests/day | Aggregate requests/day | Worst case if the guard fails every day |
+   |---|---|---|---|---|
+   | Strict zero | 33 | 33 | 160 | $0: 30 days of the cap stays inside 1,000, 1,000 and 5,000 free |
+   | Room for a deep search in one day | 300 | 100 | 160 | about $350 a month: (9,000 − 1,000) × $0.035 + (3,000 − 1,000) × $0.025 |
+
+   Under strict zero a deep search takes several days: when Google refuses a request the search stops, and `maps search --resume RUN` continues the next day without repeating anything. Start with strict zero.
 5. Provide the key as the environment variable `GOOGLE_MAPS_API_KEY`.
 
 Never paste the key into a chat or into a file in this repo. `.env*` files are unreadable to agents here on purpose.
