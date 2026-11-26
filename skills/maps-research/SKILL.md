@@ -60,6 +60,8 @@ the results in importance:
 - Gaps, and the depth allows more: `maps search --resume RUN --depth <deeper>`.
 - Stopped by the budget guard: continue with what was found. The guard's refusal
   is a result to report. Spending is the owner's decision alone.
+- Exit code 3, or a refusal starting "Account protection:": the search is over.
+  Report what the tool said to the owner and follow `docs/account-protection.md`.
 
 **Done when** coverage is complete, or each remaining gap is noted for the report.
 
@@ -71,7 +73,7 @@ that no query used. Add the promising ones with
 
 When the owner describes a quality, not a category ("quiet", "known for its
 sourdough"), also ask Google's agent tools in plain words:
-`maps discover "quiet bakery known for sourdough" --into RUN`, then
+`maps discover "quiet bakery known for sourdough in <city>" --into RUN`, then
 `maps details RUN --missing` so the new places have ratings. It returns a short
 curated list, so it adds candidates; it never replaces the search.
 
@@ -98,7 +100,8 @@ five places unless the owner says otherwise), then test it:
 3. HIRE and INVESTIGATE: `maps reviews integrity RUN` (covers every place with
    fetched reviews) and `maps reviews contributors RUN` (reviewers shared
    between places).
-4. GEMS and EXPLORE, only when the owner has enabled Apify: follow reviewers
+4. GEMS and EXPLORE, only when `maps doctor` shows `apify_contributor`
+   approved: follow reviewers
    who rated the best finds highly to the other places they rated,
    `maps reviews contributors RUN --liked PLACE_ID --expand 5`. It looks up
    individual reviewers through a scraper, so use it on a few contributors.

@@ -54,13 +54,14 @@ that could not be opened from the build environment.
    result in `knowledge/search-lessons.md`.
 2. **Apify and DataForSEO.** These are scrapers of Google Maps, not licensed
    access. Google's terms prohibit scraping; the providers carry that risk under
-   their own terms and you carry it under yours. They are off by default, need
-   their own credentials, and DataForSEO additionally needs `--cost quality`.
-   Decide deliberately whether to enable them.
+   their own terms and you carry it under yours. They are conditional: the
+   toolkit refuses to use them until an approval is recorded that states their
+   data rights, retrieval method and permitted downstream use
+   (`docs/account-protection.md`). DataForSEO additionally needs `--cost quality`.
 3. **Contributor lookup.** `maps reviews contributors --expand` fetches the
    public review history of individual reviewers through an Apify actor. That
-   is personal data about named people as well as scraping. It is off unless
-   `APIFY_TOKEN` is set and the flag is given. Use it on the few contributors a
+   is personal data about named people as well as scraping. It needs its own
+   recorded approval, separate from Apify's. Use it on the few contributors a
    search of your own surfaced, keep the results inside the expiring run, and
    never copy a reviewer's name or history into `knowledge/`.
 4. **Review text search.** Google returns at most five reviews per place and no

@@ -17,11 +17,18 @@ state what the command does and what it costs.
 - **Free-first.** Never pass `--cost quality` unless the owner's request
   authorizes spending and gives a ceiling. When the budget guard stops a search,
   report what was covered and what was not. A refusal from the guard is a result.
+- **Account protection is fixed.** Depth and spending vary per request; the
+  rules in `docs/account-protection.md` never do, and `maps/policy.py` enforces
+  them. A refusal that starts "Account protection:" is final for you: report
+  it. Exit code 3 with a `policy_stop` block means a provider signalled
+  enforcement: stop, tell the owner what it said, commit `policy/stops.json`.
+  Approvals and clearing a stop are the owner's decisions. Run
+  `maps policy approve` or `maps policy clear-stop` only with the owner's own
+  statement from this conversation, quoted word for word.
 - **Maps content is not kept.** Search results live in the state directory
   (outside the repo) and expire. Commit place IDs, Maps links and the owner's own
   notes to `knowledge/`; never review text, addresses or rating tables. Read
-  `docs/permissions.md` before storing, exporting or sharing results, and before
-  enabling Apify or DataForSEO.
+  `docs/permissions.md` before storing, exporting or sharing results.
 - **Never claim coverage the run did not achieve.** Every search reports
   `coverage`; carry its gaps into what you tell the owner.
 - **Secrets stay out of files.** Credentials come from the environment
@@ -38,7 +45,8 @@ before running or deploying it.
   before a commit.
 - A change to `maps/retrieval.py` or `maps/scoring.py` is an experiment: follow
   `evals/README.md` and log it in `evals/experiments.md`, kept or reverted.
-- A new retrieval source implements the contract in `maps/providers/base.py` and
+- A new retrieval source is registered in `maps/policy.py` first (core or
+  conditional), implements the contract in `maps/providers/base.py`, and
   charges `Budget` before each billable request. Prices live only in
   `maps/pricing.py`.
 - API field names that have not yet been confirmed against a live call are

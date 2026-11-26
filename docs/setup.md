@@ -53,7 +53,7 @@ Before using any host, check that its data settings do not train on or retain yo
 
 ## 4. Optional providers
 
-Both are off until their credentials are set.
+Both are conditional. Credentials alone do not enable them: each also needs a recorded approval, see `docs/account-protection.md`.
 
 - Apify: `APIFY_TOKEN`. It has a monthly free credit that the guard tracks.
 - DataForSEO: `DATAFORSEO_LOGIN` and `DATAFORSEO_PASSWORD`. It always costs money, so it only runs with `--cost quality --max-usd N`.
@@ -71,7 +71,12 @@ uv sync --extra semantic
   The first use downloads a multilingual model of about 220 MB from
   huggingface.co, so that host must be reachable. The model then runs locally.
 - Meaning-based discovery (`maps discover`): uses the same Google key. Enable
-  "Maps Grounding Lite API" (Google's agent tools) on the same project.
+  "Maps Grounding Lite API" (Google's agent tools) on the same project. It also
+  needs the AI host recorded as compatible: set `MAPS_AI_HOST` to a name for
+  the host and record the check, see `docs/account-protection.md`.
+- Gemini Maps grounding (`maps discover --via gemini`): optional, needs
+  `GEMINI_API_KEY` from Google AI Studio and `--cost quality`, because its
+  price is unconfirmed.
 - MCP server: see `docs/mcp.md`.
 
 `uv run maps doctor` shows which of these are installed.
