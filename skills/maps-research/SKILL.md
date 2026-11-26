@@ -84,6 +84,9 @@ five places unless the owner says otherwise), then test it:
    what the owner cares about, and how it fails (for a tiler: "level grout
    finish" and "cracked uneven redo late"). One command per set, each run once:
    `maps reviews search RUN "level grout finish" --by-place`.
+   That is at most four searches for two languages. No matches means the
+   fetched reviews are silent on the point: that is the finding. Write it down
+   and move to the next step.
 3. HIRE and INVESTIGATE: `maps reviews integrity RUN` (covers every place with
    fetched reviews) and `maps reviews contributors RUN` (reviewers shared
    between places).
@@ -96,8 +99,8 @@ with its reason, or you can say exactly why the reviews cannot settle it.
 
 ## 6. Report
 
-Send the owner this, in this order. Every slot is required; write "none" in a
-slot that is empty.
+Copy this template and fill it in. Keep all five bold headings, in this order;
+write "none" under a heading that has nothing.
 
 ```markdown
 **Answer:** <one or two sentences. If the evidence cannot support a
