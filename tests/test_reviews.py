@@ -387,3 +387,38 @@ def test_arabic_search_matches_with_and_without_the_article():
     idx = ReviewIndex([place("p", [rv("p", "الخبز طازج جدا", 5)]), place("q", [rv("q", "قهوة عادية", 3)])])
     assert [m.place_id for m in idx.search("خبز")] == ["p"]
     assert [m.place_id for m in idx.search("الخبز")] == ["p"]
+
+
+# --- partial matching --------------------------------------------------------------------------
+
+
+def _one(*texts: str) -> ReviewIndex:
+    return ReviewIndex([place("p", [rv("p", t) for t in texts])])
+
+
+def test_query_term_partially_matches_an_inflected_form():
+    res = _one("the cup cracked in transit", "lovely service").search("crack")
+    assert len(res) == 1 and "cracked" in res[0].review.text
+
+
+def test_arabic_query_matches_a_prefixed_form():
+    res = _one("ذهبت لإصلاحه امس", "خدمة ممتازة").search("إصلاح")
+    assert len(res) == 1 and "لإصلاحه" in res[0].review.text
+
+
+def test_exact_match_outranks_partial_for_otherwise_identical_reviews():
+    res = _one("the glass is cracked today", "the glass is crack today", "plain filler review").search(
+        "crack"
+    )
+    assert [m.review.text for m in res] == ["the glass is crack today", "the glass is cracked today"]
+    assert res[0].score > res[1].score > 0
+
+
+def test_short_terms_match_exactly_only():
+    assert _one("a big cabin here", "other words").search("ab") == []
+    assert len(_one("ab cd here", "other words").search("ab")) == 1
+
+
+def test_review_with_neither_form_scores_zero():
+    assert _one("cracked", "nothing relevant").search("scratch") == []
+    assert [m.review.text for m in _one("cracked", "nothing relevant").search("crack")] == ["cracked"]

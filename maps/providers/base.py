@@ -19,6 +19,13 @@ class ProviderError(RuntimeError):
     """A provider request failed (HTTP error, bad payload, missing credentials)."""
 
 
+class QuotaExceeded(ProviderError):
+    """The provider itself refused with a quota error (HTTP 429) even after a retry.
+
+    Routine under a strict daily quota: callers stop cleanly and keep what they have.
+    """
+
+
 @dataclass
 class SearchPage:
     places: list[Place] = field(default_factory=list)

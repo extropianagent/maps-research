@@ -46,6 +46,8 @@ def _strip_article(token: str) -> str:
 
 BM25_K1 = 1.5
 BM25_B = 0.75
+PARTIAL_MIN_LEN = 3  # shorter query terms match whole tokens only
+PARTIAL_WEIGHT = 0.5  # a partial occurrence counts half toward term frequency
 
 
 @dataclass
@@ -87,8 +89,23 @@ class ReviewIndex:
     def __len__(self) -> int:
         return len(self._docs)
 
-    def _idf(self, term: str) -> float:
-        n, df = len(self._docs), len(self._postings.get(term, ()))
+    def _term_freqs(self, term: str) -> dict[int, float]:
+        """Per-document frequency of a query term: exact occurrences count 1, partial ones 0.5.
+
+        A partial occurrence is an index token that contains the term (terms of 3+ characters only).
+        """
+        freqs: dict[int, float] = defaultdict(float)
+        for doc_id in self._postings.get(term, ()):
+            freqs[doc_id] += self._docs[doc_id][3][term]
+        if len(term) >= PARTIAL_MIN_LEN:
+            for token, doc_ids in self._postings.items():
+                if token != term and term in token:
+                    for doc_id in doc_ids:
+                        freqs[doc_id] += PARTIAL_WEIGHT * self._docs[doc_id][3][token]
+        return freqs
+
+    def _idf(self, df: int) -> float:
+        n = len(self._docs)
         return math.log(1 + (n - df + 0.5) / (df + 0.5))
 
     def _score_all(self, query: str) -> dict[int, float]:
@@ -96,9 +113,10 @@ class ReviewIndex:
         if not self._docs or self._avgdl == 0:
             return scores
         for term in dict.fromkeys(tokenize(query)):
-            idf = self._idf(term)
-            for doc_id in self._postings.get(term, ()):
-                tf, dl = self._docs[doc_id][3][term], self._docs[doc_id][4]
+            freqs = self._term_freqs(term)
+            idf = self._idf(len(freqs))
+            for doc_id, tf in freqs.items():
+                dl = self._docs[doc_id][4]
                 norm = BM25_K1 * (1 - BM25_B + BM25_B * dl / self._avgdl)
                 scores[doc_id] += idf * tf * (BM25_K1 + 1) / (tf + norm)
         return scores

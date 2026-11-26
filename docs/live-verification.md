@@ -20,6 +20,8 @@ this file and the code together. Tick an item only after seeing a real response.
       bucket by rating; see `knowledge/search-lessons.md`).
 - [ ] Place Details returns at most 5 reviews, and each carries `originalText`,
       `publishTime`, `authorAttribution.uri`, `googleMapsUri`, `flagContentUri`.
+- [ ] An exhausted daily quota is signalled with HTTP 429 (the search then
+      stops cleanly and `--resume` continues the next day).
 - [ ] Field mask to SKU mapping matches `maps/pricing.py`: compare one day of
       use against the Google Cloud billing report, SKU by SKU.
 

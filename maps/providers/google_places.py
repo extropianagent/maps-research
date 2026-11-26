@@ -20,7 +20,7 @@ import httpx
 from ..budget import Budget, BudgetExceeded
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
-from .base import ProviderError, SearchPage
+from .base import ProviderError, QuotaExceeded, SearchPage
 
 BASE_URL = "https://places.googleapis.com/v1"
 SEARCH_URL = f"{BASE_URL}/places:searchText"
@@ -116,6 +116,11 @@ class GooglePlaces:
                 continue
             break
         assert resp is not None
+        if resp.status_code == 429:
+            raise QuotaExceeded(
+                "google: HTTP 429, the provider's quota was reached; "
+                "`maps search --resume RUN` continues later"
+            )
         if not 200 <= resp.status_code < 300:
             detail = ""
             try:
@@ -176,7 +181,7 @@ class GooglePlaces:
                 body["pageToken"] = token
             try:
                 data = self._call("POST", SEARCH_URL, sku=sku, mask=mask, json=body)
-            except BudgetExceeded as e:
+            except (BudgetExceeded, QuotaExceeded) as e:
                 if not places:
                     raise
                 stopped_early, budget_exhausted = str(e), True

@@ -22,7 +22,7 @@ from typing import Any
 from .budget import BudgetExceeded
 from .geography import BBox
 from .models import Place, Query
-from .providers.base import Provider, ProviderError
+from .providers.base import Provider, ProviderError, QuotaExceeded
 from .store import RunStore
 
 MAX_CONSECUTIVE_ERRORS = 3
@@ -119,7 +119,7 @@ def discover(
                 page = provider.text_search(
                     query, bbox=cell, level=level, max_results=depth.max_results, **search_kwargs
                 )
-            except BudgetExceeded as e:
+            except (BudgetExceeded, QuotaExceeded) as e:
                 exhausted[provider.name] = str(e)
                 result.unresolved.append({**gap, "reason": "not searched"})
                 continue

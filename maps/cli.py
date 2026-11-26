@@ -29,7 +29,7 @@ from .geography import BBox
 from .models import Hit, Place, Query
 from .pricing import PRICES_CHECKED, SKUS
 from .providers.apify import ApifyProvider
-from .providers.base import ProviderError
+from .providers.base import ProviderError, QuotaExceeded
 from .providers.dataforseo import DataForSEOProvider
 from .providers.google_aggregate import PlacesAggregate
 from .providers.google_places import GooglePlaces
@@ -898,7 +898,7 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
     """Fetch Google place details. Cost: 1 Place Details call per place (see --tier).
 
     Fetches places without a name (--missing) or the top N of the ranked, filtered places (--top N,
-    default 20). Results are stored in the run. Stops cleanly when the budget refuses.
+    default 20). Results are stored in the run. Stops cleanly when the budget or the provider quota refuses.
     """
     if missing and rk.top is not None:
         raise CliError("use either --missing or --top N, not both")
@@ -917,7 +917,7 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
     for p in todo:
         try:
             got = google.details(p.place_id, tier=tier)
-        except BudgetExceeded as e:
+        except (BudgetExceeded, QuotaExceeded) as e:
             stopped = str(e)
             break
         except ProviderError as e:
@@ -975,7 +975,7 @@ def reviews_fetch(
 
     Cost: Google Place Details Enterprise + Atmosphere per place (1,000 free calls/month); Apify and
     DataForSEO bill per review; sim is free. Picks the first --top ranked, filtered places without
-    stored reviews, so repeating the command moves down the ranking. Stops cleanly on budget.
+    stored reviews, so repeating the command moves down the ranking. Stops cleanly on budget or provider quota.
     """
     run = _open_run(run_id)
     spec = run.spec
@@ -991,7 +991,7 @@ def reviews_fetch(
     for p in todo:
         try:
             got = prov.reviews(p.place_id, limit=limit)
-        except BudgetExceeded as e:
+        except (BudgetExceeded, QuotaExceeded) as e:
             stopped = str(e)
             break
         except (ProviderError, KeyError) as e:

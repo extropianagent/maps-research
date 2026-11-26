@@ -9,8 +9,8 @@ from maps import cli
 from maps.budget import BudgetExceeded, Ledger
 from maps.config import ledger_path
 from maps.geography import BBox
-from maps.models import Place
-from maps.providers.base import SearchPage
+from maps.models import Place, Review
+from maps.providers.base import QuotaExceeded, SearchPage
 from maps.providers.google_aggregate import EnumerationResult
 from maps.store import RunStore, list_runs
 
@@ -379,10 +379,14 @@ def _reviewed_run(flag_counts):
     ids = list(store.places())[: len(flag_counts)]
     for pid, n_dupes in zip(ids, flag_counts, strict=True):
         revs = [
-            Review(place_id=pid, text="same copied text here", rating=5.0, author=f"a{i}", author_id=f"u{pid}{i}")
+            Review(
+                place_id=pid, text="same copied text here", rating=5.0, author=f"a{i}", author_id=f"u{pid}{i}"
+            )
             for i in range(n_dupes)
         ]
-        revs.append(Review(place_id=pid, text=f"unique words {pid}", rating=4.0, author="z", author_id=f"z{pid}"))
+        revs.append(
+            Review(place_id=pid, text=f"unique words {pid}", rating=4.0, author="z", author_id=f"z{pid}")
+        )
         store.add_reviews(pid, revs)
     return run_id, ids
 
@@ -637,3 +641,38 @@ def test_resume_updates_depth_and_adds_providers():
     assert {r["run_id"]: r for r in jrun("runs")["runs"]}[first["run_id"]]["depth"] == "standard"
     spec = RunStore.open(ledger_path().parent, first["run_id"]).spec
     assert spec["providers"] == ["sim"]
+
+
+def test_reviews_fetch_stops_cleanly_when_the_provider_quota_is_reached(monkeypatch):
+    run = sim_search("--depth", "quick")["run_id"]
+    calls = []
+
+    class QuotaOnThird:
+        name = "google"
+
+        def available(self):
+            return True
+
+        def reviews(self, place_id, *, limit=5, language=None):
+            calls.append(place_id)
+            if len(calls) == 3:
+                raise QuotaExceeded("google: quota reached; `maps search --resume RUN` continues later")
+            return [Review(place_id=place_id, text="nice", rating=5.0)]
+
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [QuotaOnThird()])
+    doc = jrun("reviews", "fetch", run)
+    assert len(doc["places"]) == 2 and "quota" in doc["stopped"] and doc["errors"] == []
+    stored = [p for p in RunStore.open(cli.config.state_dir(), run).places().values() if p.reviews]
+    assert len(stored) == 2
+
+
+def test_details_stops_cleanly_when_the_provider_quota_is_reached(fakes):
+    google, _ = fakes
+    run = jrun("enumerate", "--bbox", "24.5,46.5,24.9,46.9", "--type", "bakery")["run_id"]
+
+    def quota(place_id, *, tier="enterprise", language=None):
+        raise QuotaExceeded("google: quota reached")
+
+    google.details = quota
+    doc = jrun("details", run, "--missing", "--tier", "pro")
+    assert doc["fetched"] == 0 and "quota" in doc["stopped"] and doc["errors"] == []

@@ -9,7 +9,7 @@ import pytest
 
 from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.geography import BBox
-from maps.providers.base import ProviderError
+from maps.providers.base import ProviderError, QuotaExceeded
 from maps.providers.google_aggregate import EnumerationResult, PlacesAggregate
 
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
@@ -264,3 +264,28 @@ def test_http_error_keeps_ids_so_far_and_reports_unvisited_cells():
     assert res.place_ids == ["a", "b", "c"]
     assert res.unresolved == keys[2:]
     assert res.stopped and "HTTP 500" in res.stopped
+
+
+def test_quota_refusal_raises_quota_exceeded():
+    agg, _ = make(lambda req: httpx.Response(429, json={"error": {"message": "quota"}}))
+    with pytest.raises(QuotaExceeded, match="--resume"):
+        agg.count(BBOX, types=["cafe"])
+
+
+def test_enumerate_stops_cleanly_on_quota_and_keeps_ids():
+    inner = grid(
+        {BBOX.key(): 150, **{c.key(): 1 for c in BBOX.split()}},
+        {c.key(): [f"id{i}"] for i, c in enumerate(BBOX.split())},
+    )
+    n = {"i": 0}
+
+    def handler(req):
+        n["i"] += 1
+        if n["i"] >= 5:
+            return httpx.Response(429, json={"error": {"message": "quota"}})
+        return inner(req)
+
+    agg, _ = make(handler)
+    res = agg.enumerate(BBOX, types=["cafe"])
+    assert res.stopped and "quota" in res.stopped.lower()
+    assert res.place_ids and res.unresolved

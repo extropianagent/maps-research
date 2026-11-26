@@ -20,7 +20,7 @@ import httpx
 
 from ..budget import Budget, BudgetExceeded
 from ..geography import BBox
-from .base import ProviderError
+from .base import ProviderError, QuotaExceeded
 
 URL = "https://areainsights.googleapis.com/v1:computeInsights"
 PLACES_LIMIT = 100  # INSIGHT_PLACES returns at most this many IDs per request
@@ -87,6 +87,11 @@ class PlacesAggregate:
             )
         except httpx.HTTPError as e:
             raise ProviderError(f"google aggregate: request failed ({type(e).__name__})") from None
+        if resp.status_code == 429:
+            raise QuotaExceeded(
+                "google aggregate: HTTP 429, the provider's quota was reached; "
+                "`maps search --resume RUN` continues later"
+            )
         if not 200 <= resp.status_code < 300:
             detail = ""
             try:
@@ -151,7 +156,7 @@ class PlacesAggregate:
     ) -> EnumerationResult:
         """Quadtree walk: count a cell, list it if it fits under the limit, otherwise split it.
 
-        Stops cleanly on BudgetExceeded or a ProviderError (HTTP failure) and reports the cells it did not get to.
+        Stops cleanly on BudgetExceeded, QuotaExceeded or a ProviderError (HTTP failure) and reports the cells it did not get to.
         """
         kw: dict[str, Any] = dict(
             types=types, min_rating=min_rating, max_rating=max_rating, operational_only=operational_only
@@ -179,7 +184,7 @@ class PlacesAggregate:
                     res.unresolved.append(cell.key())
                 else:
                     stack.extend((c, level + 1) for c in reversed(cell.split()))
-            except (BudgetExceeded, ProviderError) as e:
+            except (BudgetExceeded, QuotaExceeded, ProviderError) as e:
                 res.stopped = str(e)
                 res.unresolved.append(cell.key())
                 res.unresolved.extend(c.key() for c, _ in reversed(stack))

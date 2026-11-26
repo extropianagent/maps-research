@@ -250,3 +250,34 @@ def test_checkpoint_key_includes_search_kwargs_so_different_filters_do_not_repla
     keys = [json.loads(line)["key"] for line in (store.dir / "tasks.jsonl").read_text().splitlines()]
     assert f"sim|bakery|{AREA.key()}|20" in keys, "no kwargs: the historical key"
     assert any(k.endswith("|20|min_rating=4.0") for k in keys)
+
+
+def test_quota_refusal_stops_the_provider_cleanly_and_a_resume_completes(tmp_path):
+    def refuse(req):
+        return httpx.Response(429, json={"error": {"message": "quota"}})
+
+    def ok(req):
+        return httpx.Response(200, json={"places": [_gplace(f"a{i}") for i in range(5)]})
+
+    store = RunStore.create(tmp_path, {})
+    first = discover([_google(refuse, budget())], [Query("bakery")], AREA, TWO_PAGES, store=store)
+    assert "quota" in first.stopped.lower()
+    assert first.errors == [] and not first.complete
+    assert [u["reason"] for u in first.unresolved] == ["not searched"]
+    assert first.tasks_run == 0
+
+    second = discover([_google(ok, budget())], [Query("bakery")], AREA, TWO_PAGES, store=store)
+    assert second.complete and len(second.places) == 5
+
+
+def test_quota_refusal_on_page_2_keeps_page_1_and_stops_the_provider():
+    def handler(req):
+        if b"pageToken" in req.content:
+            return httpx.Response(429, json={"error": {"message": "quota"}})
+        return httpx.Response(
+            200, json={"places": [_gplace(f"a{i}") for i in range(20)], "nextPageToken": "T"}
+        )
+
+    result = discover([_google(handler, budget())], [Query("bakery")], AREA, TWO_PAGES)
+    assert len(result.places) == 20 and result.errors == []
+    assert "quota" in result.stopped.lower()

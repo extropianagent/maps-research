@@ -10,7 +10,7 @@ import pytest
 from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.geography import BBox
 from maps.models import Query
-from maps.providers.base import Provider, ProviderError
+from maps.providers.base import Provider, ProviderError, QuotaExceeded
 from maps.providers.google_places import GooglePlaces
 
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
@@ -517,3 +517,26 @@ def test_resolve_area_no_viewport():
     p, _ = make(lambda r: httpx.Response(200, json={"places": [{"id": "x", "displayName": {"text": "X"}}]}))
     with pytest.raises(ProviderError, match="viewport"):
         p.resolve_area("X")
+
+
+def test_quota_refusal_after_the_retry_raises_quota_exceeded_without_the_key():
+    def handler(req):
+        return httpx.Response(429, json={"error": {"message": f"quota for {KEY}"}})
+
+    p, _ = make(handler)
+    with pytest.raises(QuotaExceeded, match="--resume") as exc:
+        p.text_search(Query("x"), bbox=None)
+    assert "quota" in str(exc.value).lower() and KEY not in str(exc.value)
+    assert isinstance(exc.value, ProviderError)
+
+
+def test_quota_refusal_on_page_2_keeps_page_1_like_a_budget_refusal():
+    def handler(req):
+        if b"pageToken" in req.content:
+            return httpx.Response(429, json={"error": {"message": "quota"}})
+        return httpx.Response(200, json={"places": ids("a", 20), "nextPageToken": "T"})
+
+    p, _ = make(handler)
+    page = p.text_search(Query("x"), bbox=None)
+    assert len(page.places) == 20 and page.saturated and page.budget_exhausted
+    assert "quota" in page.stopped_early.lower()
