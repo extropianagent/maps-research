@@ -9,9 +9,11 @@ from maps import cli
 from maps.budget import BudgetExceeded, Ledger
 from maps.config import ledger_path
 from maps.geography import BBox
-from maps.models import Place, Review
-from maps.providers.base import QuotaExceeded, SearchPage
+from maps.models import Hit, Place, Review
+from maps.providers.base import ProviderError, QuotaExceeded, SearchPage
+from maps.providers.google_agent_tools import AgentSearchResult
 from maps.providers.google_aggregate import EnumerationResult
+from maps.semantic import DEFAULT_MODEL, SemanticUnavailable
 from maps.store import RunStore, list_runs
 
 SECRETS = {
@@ -77,7 +79,15 @@ def test_doctor_shape_and_no_secret_values(monkeypatch):
     result = run_cli("doctor")
     doc = json.loads(result.stdout)
     assert set(doc) >= {"version", "state_dir", "retention_days", "providers", "prices_checked", "runs"}
-    assert set(doc["providers"]) == {"google", "google_aggregate", "apify", "dataforseo", "sim"}
+    assert set(doc["providers"]) == {
+        "google",
+        "google_aggregate",
+        "google_agent_tools",
+        "apify",
+        "dataforseo",
+        "sim",
+    }
+    assert doc["providers"]["google_agent_tools"] == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"]}
     assert doc["providers"]["google"] == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"]}
     assert doc["providers"]["dataforseo"]["env"] == ["DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"]
     assert doc["providers"]["sim"]["available"] is True
@@ -676,3 +686,414 @@ def test_details_stops_cleanly_when_the_provider_quota_is_reached(fakes):
     google.details = quota
     doc = jrun("details", run, "--missing", "--tier", "pro")
     assert doc["fetched"] == 0 and "quota" in doc["stopped"] and doc["errors"] == []
+
+
+# --- doctor features / help -------------------------------------------------------------------
+
+
+def test_doctor_reports_optional_features_and_the_agent_tools_provider():
+    doc = jrun("doctor")
+    assert doc["providers"]["google_agent_tools"]["available"] is False
+    assert doc["features"]["semantic"]["install"] == "uv sync --extra semantic"
+    assert doc["features"]["mcp"]["install"] == "uv sync --extra mcp"
+    assert isinstance(doc["features"]["semantic"]["installed"], bool)
+    assert isinstance(doc["features"]["mcp"]["installed"], bool)
+
+
+def test_doctor_features_follow_importability(monkeypatch):
+    monkeypatch.setattr(cli, "_importable", lambda name: name == "fastembed")
+    feats = jrun("doctor")["features"]
+    assert feats["semantic"]["installed"] is True and feats["mcp"]["installed"] is False
+
+
+def test_top_level_help_mentions_discover_and_hybrid_search():
+    out = run_cli("--help").stdout
+    assert "maps discover" in out and "--mode hybrid" in out
+    assert "discover" in out
+
+
+# --- discover ---------------------------------------------------------------------------------
+
+NOTE = "NOTE-SECRET-sourdough-crumb-text"
+SUMMARY = "SUMMARY-SECRET: Loaf is a quiet sourdough bakery [0]."
+ATTR_TITLE = "ATTR-TITLE-SECRET Google Maps"
+
+
+class FakeAgentTools:
+    name = "google_agent_tools"
+
+    def __init__(self, raises=None, key=True):
+        self.calls: list[tuple] = []
+        self.raises = raises
+        self.key = key
+
+    def available(self):
+        return self.key
+
+    def search_places(self, text, *, bbox=None, language=None):
+        self.calls.append((text, bbox, language))
+        if self.raises:
+            raise self.raises
+        places = [
+            Place(
+                f"ChIJ_agent_{i}_abcdef",
+                name=f"Loaf {i}",
+                maps_url=f"https://maps.google.com/?cid={i}",
+                hits=[Hit(provider="google_agent_tools", query=text, rank=i)],
+            )
+            for i in (1, 2)
+        ]
+        return AgentSearchResult(
+            places=places,
+            summary=SUMMARY,
+            attributions={
+                "ChIJ_agent_1_abcdef": {"title": ATTR_TITLE, "url": "https://attr.example/1"},
+            },
+            notes={"ChIJ_agent_1_abcdef": NOTE},
+        )
+
+
+@pytest.fixture
+def agent(monkeypatch):
+    fake = FakeAgentTools()
+    monkeypatch.setattr(cli, "build_agent_tools", lambda budget: fake)
+    return fake
+
+
+def test_discover_creates_a_run_with_the_places(agent, state):
+    doc = jrun(
+        "discover", "quiet bakery known for sourdough", "--bbox", "24.5,46.5,24.9,46.9", "--lang", "en"
+    )
+    assert doc["query"] == "quiet bakery known for sourdough" and doc["found"] == 2
+    assert [p["place_id"] for p in doc["places"]] == ["ChIJ_agent_1_abcdef", "ChIJ_agent_2_abcdef"]
+    first = doc["places"][0]
+    assert first["name"] == "Loaf 1" and first["maps_url"].startswith("https://maps.google.com")
+    assert first["note"] == NOTE and doc["places"][1]["note"] is None
+    assert first["attribution"] == {"title": ATTR_TITLE, "url": "https://attr.example/1"}
+    assert doc["places"][1]["attribution"] is None
+    assert doc["summary"] == SUMMARY
+    assert "Maps Experience agent tools" in doc["source_note"] and "Google Maps links" in doc["source_note"]
+    assert "budget" in doc
+    assert any("maps details" in n and "--missing" in n and doc["run_id"] in n for n in doc["next"])
+    assert any(n.startswith(f"maps rank {doc['run_id']}") for n in doc["next"])
+    text, bbox, lang = agent.calls[0]
+    assert bbox is not None and lang == "en"
+    run = RunStore.open(state, doc["run_id"])
+    assert run.spec["discover"] == ["quiet bakery known for sourdough"]
+    assert set(run.places()) == {"ChIJ_agent_1_abcdef", "ChIJ_agent_2_abcdef"}
+    key = "google_agent_tools|quiet bakery known for sourdough|24.50000,46.50000,24.90000,46.90000"
+    assert run.done(key) is not None and run.done(key).saturated is False
+
+
+def test_discover_without_a_location_uses_a_dash_key(agent, state):
+    doc = jrun("discover", "late night shawarma in Riyadh")
+    assert agent.calls[0][1] is None
+    run = RunStore.open(state, doc["run_id"])
+    assert run.done("google_agent_tools|late night shawarma in Riyadh|-") is not None
+
+
+def test_discover_into_adds_to_an_existing_run(agent, fakes_free, state):
+    base = jrun("enumerate", "--bbox", "24.5,46.5,24.9,46.9", "--type", "bakery")
+    doc = jrun("discover", "sourdough", "--into", base["run_id"])
+    assert doc["run_id"] == base["run_id"]
+    places = RunStore.open(state, base["run_id"]).places()
+    assert {"g1", "g2", "g3", "ChIJ_agent_1_abcdef"} <= set(places)
+    assert RunStore.open(state, base["run_id"]).spec["discover"] == ["sourdough"]
+
+
+def test_discover_notes_summary_and_attribution_are_printed_but_never_stored(agent, state):
+    doc = jrun("discover", "sourdough")
+    printed = json.dumps(doc)
+    secrets = (NOTE, SUMMARY, ATTR_TITLE)
+    assert all(x in printed for x in secrets)
+    for f in (state / "runs" / doc["run_id"]).rglob("*"):
+        if f.is_file():
+            assert not any(x in f.read_text(encoding="utf-8") for x in secrets)
+    for f in state.rglob("*"):
+        if f.is_file() and f.suffix in {".json", ".jsonl"}:
+            assert not any(x in f.read_text(encoding="utf-8") for x in secrets)
+
+
+def test_discover_without_a_key_names_the_variable():
+    result = run_cli("discover", "sourdough", expect=2)
+    assert "GOOGLE_MAPS_API_KEY" in result.output
+
+
+@pytest.mark.parametrize("err", [BudgetExceeded("google_agent_tools: refused"), QuotaExceeded("daily cap")])
+def test_discover_stops_cleanly_on_budget_or_quota(monkeypatch, err):
+    monkeypatch.setattr(cli, "build_agent_tools", lambda budget: FakeAgentTools(raises=err))
+    doc = jrun("discover", "sourdough")
+    assert doc["stopped"] and str(err) in doc["stopped"]
+    assert doc["found"] == 0 and doc["places"] == []
+
+
+def test_discover_help_states_cost_and_status():
+    out = run_cli("discover", "--help").stdout.lower()
+    assert "experimental" in out and "unverified" in out and "free" in out and "sourdough" in out
+
+
+@pytest.fixture
+def fakes_free(monkeypatch):
+    monkeypatch.setattr(
+        cli, "build_providers", lambda names, budget, tier, bbox: [FakeAggregate() for _ in names]
+    )
+
+
+# --- reviews search modes ---------------------------------------------------------------------
+
+CONCEPTS = [["grout", "joints", "crumbled"], ["late", "delayed"], ["coffee", "espresso"]]
+
+
+def _vec(text):
+    low = text.casefold()
+    return [float(sum(low.count(w) for w in syns)) for syns in CONCEPTS]
+
+
+class FakeEmbedder:
+    def __init__(self, name="fake-v1"):
+        self.name = name
+        self.embedded = 0
+
+    def embed(self, texts):
+        self.embedded += len(texts)
+        return [_vec(t) for t in texts]
+
+    def embed_query(self, text):
+        return _vec(text)
+
+
+@pytest.fixture
+def embedders(monkeypatch):
+    made: list[FakeEmbedder] = []
+    models: list[str] = []
+
+    def build(model):
+        models.append(model)
+        made.append(FakeEmbedder(model))
+        return made[-1]
+
+    monkeypatch.setattr(cli, "build_embedder", build)
+    return made, models
+
+
+@pytest.fixture
+def paraphrase_run(state):
+    run_id = sim_search("--depth", "quick")["run_id"]
+    store = RunStore.open(state, run_id)
+    a, b, c = list(store.places())[:3]
+    store.add_reviews(a, [Review(a, text="the tile grout crumbled after a week", rating=2.0, author="x")])
+    store.add_reviews(
+        b,
+        [
+            Review(b, text="grout is fine, joints neat", rating=5.0, author="y"),
+            Review(b, text="lovely espresso", rating=4.0, author="y2"),
+        ],
+    )
+    store.add_reviews(c, [Review(c, text="delayed again", rating=1.0, author="z")])
+    return run_id, a, b, c
+
+
+def test_keyword_mode_is_the_default_and_misses_the_paraphrase(paraphrase_run):
+    run_id, a, b, _ = paraphrase_run
+    doc = jrun("reviews", "search", run_id, "joints")
+    assert doc["mode"] == "keyword" and "model" not in doc
+    assert {r["place_id"] for r in doc["results"]} == {b}  # a's review never says "joints"
+
+
+@pytest.mark.parametrize("mode", ["semantic", "hybrid"])
+def test_semantic_and_hybrid_find_the_paraphrase(paraphrase_run, embedders, state, mode):
+    run_id, a, b, _ = paraphrase_run
+    doc = jrun("reviews", "search", run_id, "joints", "--mode", mode, "--top", "5")
+    assert doc["mode"] == mode and doc["model"] == DEFAULT_MODEL
+    assert {r["place_id"] for r in doc["results"][:2]} == {a, b}  # semantic also lists zero-score reviews
+    assert (state / "runs" / run_id / "embeddings.json").exists()
+
+
+def test_model_option_reaches_the_factory(paraphrase_run, embedders):
+    run_id = paraphrase_run[0]
+    doc = jrun("reviews", "search", run_id, "joints", "--mode", "semantic", "--model", "my/model")
+    assert embedders[1] == ["my/model"] and doc["model"] == "my/model"
+
+
+def test_second_semantic_call_embeds_nothing(paraphrase_run, embedders):
+    run_id = paraphrase_run[0]
+    jrun("reviews", "search", run_id, "joints", "--mode", "semantic")
+    jrun("reviews", "search", run_id, "joints", "--mode", "hybrid")
+    first, second = embedders[0]
+    assert first.embedded == 4 and second.embedded == 0
+
+
+def test_semantic_by_place_and_rating_filters(paraphrase_run, embedders):
+    run_id, a, b, c = paraphrase_run
+    doc = jrun("reviews", "search", run_id, "joints", "--mode", "semantic", "--by-place")
+    assert {r["place_id"] for r in doc["results"][:2]} == {a, b}
+    assert "n_matches" in doc["results"][0] and "best" in doc["results"][0]
+    hyb = jrun("reviews", "search", run_id, "joints", "--mode", "hybrid", "--by-place", "--top", "1")
+    assert len(hyb["results"]) == 1
+    low = jrun("reviews", "search", run_id, "joints", "--mode", "semantic", "--max-rating", "2")
+    assert {r["place_id"] for r in low["results"]} == {a, c}  # b's reviews are rated 4 and 5
+    assert low["results"][0]["place_id"] == a
+    high = jrun("reviews", "search", run_id, "joints", "--mode", "hybrid", "--min-rating", "4")
+    assert {r["place_id"] for r in high["results"]} == {b}
+
+
+def test_semantic_unavailable_exits_2_with_the_install_hint(paraphrase_run, monkeypatch):
+    class Broken:
+        name = "broken"
+
+        def embed(self, texts):
+            raise SemanticUnavailable(
+                "Semantic search needs fastembed: install with `uv sync --extra semantic`."
+            )
+
+        def embed_query(self, text):
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(cli, "build_embedder", lambda model: Broken())
+    result = run_cli("reviews", "search", paraphrase_run[0], "joints", "--mode", "semantic", expect=2)
+    assert "uv sync --extra semantic" in result.output
+
+
+def test_reviews_search_help_explains_modes():
+    out = run_cli("reviews", "search", "--help").stdout.lower()
+    for word in ("keyword", "semantic", "hybrid", "locally", "download"):
+        assert word in out
+
+
+# --- reviews contributors --expand ------------------------------------------------------------
+
+A, B, C = "1000000000001", "1000000000002", "1000000000003"
+
+
+class FakeContributorProvider:
+    name = "apify"
+
+    def __init__(self, fail=None):
+        self.calls: list[tuple[str, int]] = []
+        self.fail = fail or {}
+
+    def available(self):
+        return True
+
+    def contributor_reviews(self, contributor, *, limit=10):
+        self.calls.append((contributor, limit))
+        if contributor in self.fail:
+            raise self.fail[contributor]
+        out = []
+        for i in (1, 2):
+            pid = f"ChIJ_new_{contributor}_{i}"
+            out.append(
+                Place(
+                    pid,
+                    name=f"New {i}",
+                    reviews=[
+                        Review(
+                            pid,
+                            text="nice",
+                            rating=5.0,
+                            author_id=f"https://www.google.com/maps/contrib/{contributor}/reviews",
+                            source="apify_contributor",
+                        )
+                    ],
+                )
+            )
+        return out
+
+
+@pytest.fixture
+def contributor_run(state):
+    run_id = sim_search("--depth", "quick")["run_id"]
+    store = RunStore.open(state, run_id)
+    l1, l2 = list(store.places())[:2]
+
+    def rev(pid, author, rating):
+        return Review(pid, text=f"text by {author}", rating=rating, author_id=author, author="n")
+
+    store.add_reviews(l1, [rev(l1, A, 5.0), rev(l1, B, 5.0), rev(l1, C, 3.0), rev(l1, "u-short", 5.0)])
+    store.add_reviews(l2, [rev(l2, A, 4.5), rev(l2, C, 4.0)])
+    return run_id, l1, l2
+
+
+@pytest.fixture
+def contributor_provider(monkeypatch):
+    fake = FakeContributorProvider()
+    monkeypatch.setattr(cli, "build_contributor_provider", lambda budget: fake)
+    return fake
+
+
+def test_expand_adds_places_and_reports_them(contributor_run, contributor_provider, state):
+    run_id, l1, l2 = contributor_run
+    doc = jrun(
+        "reviews", "contributors", run_id, "--liked", l1, "--liked", l2, "--expand", "1", "--limit", "7"
+    )
+    assert doc["expanded"] == [{"author_id": A, "places_added": 2}]
+    assert doc["new_places"] == 2 and doc["stopped"] is None and doc["errors"] == []
+    assert "budget" in doc and "docs/permissions.md" in doc["privacy_note"]
+    assert "public review histories" in doc["privacy_note"]
+    assert contributor_provider.calls == [(A, 7)]
+    assert f"ChIJ_new_{A}_1" in RunStore.open(state, run_id).places()
+    assert RunStore.open(state, run_id).done(f"apify_contributor|{A}|7") is not None
+    assert any(c["author_id"].endswith(A) for c in doc["contributors"])
+    overlap_ids = {o["place_id"] for o in doc["overlap"]}
+    assert {f"ChIJ_new_{A}_1", f"ChIJ_new_{A}_2"} <= overlap_ids  # recomputed after expansion
+
+
+def test_expand_replays_for_free(contributor_run, contributor_provider):
+    run_id, l1, _ = contributor_run
+    jrun("reviews", "contributors", run_id, "--liked", l1, "--expand", "1")
+    again = jrun("reviews", "contributors", run_id, "--liked", l1, "--expand", "1")
+    assert len(contributor_provider.calls) == 1
+    assert again["expanded"] == [] and again["new_places"] == 0
+
+
+def test_expand_orders_by_liked_places_then_id_and_honours_n(contributor_run, contributor_provider):
+    run_id, l1, l2 = contributor_run
+    # A rated two liked places >= 4.0, B one, C one (its 3.0 on l1 does not count), "u-short" is no contributor.
+    jrun("reviews", "contributors", run_id, "--liked", l1, "--liked", l2, "--expand", "3")
+    assert [c for c, _ in contributor_provider.calls] == [A, B, C]
+    assert all(limit == 10 for _, limit in contributor_provider.calls)
+
+
+def test_expand_min_rating_changes_the_selection(contributor_run, contributor_provider):
+    run_id, l1, l2 = contributor_run
+    jrun(
+        "reviews", "contributors", run_id, "--liked", l1, "--liked", l2, "--expand", "5", "--min-rating", "5"
+    )
+    assert [c for c, _ in contributor_provider.calls] == [A, B]  # A: only l1 at 5.0; ties by id
+
+
+def test_expand_stops_on_a_budget_refusal_with_exit_0(contributor_run, monkeypatch):
+    run_id, l1, _ = contributor_run
+    fake = FakeContributorProvider(fail={A: BudgetExceeded("apify.contributor: free allowance exhausted")})
+    monkeypatch.setattr(cli, "build_contributor_provider", lambda budget: fake)
+    doc = jrun("reviews", "contributors", run_id, "--liked", l1, "--expand", "3")
+    assert "exhausted" in doc["stopped"] and doc["expanded"] == [] and len(fake.calls) == 1
+
+
+def test_expand_stops_on_quota_after_partial_progress(contributor_run, monkeypatch):
+    run_id, l1, _ = contributor_run
+    fake = FakeContributorProvider(fail={B: QuotaExceeded("monthly cap")})
+    monkeypatch.setattr(cli, "build_contributor_provider", lambda budget: fake)
+    doc = jrun("reviews", "contributors", run_id, "--liked", l1, "--expand", "3")
+    assert [e["author_id"] for e in doc["expanded"]] == [A] and "monthly cap" in doc["stopped"]
+
+
+def test_expand_continues_past_a_provider_error(contributor_run, monkeypatch):
+    run_id, l1, _ = contributor_run
+    fake = FakeContributorProvider(fail={A: ProviderError("apify: bad item")})
+    monkeypatch.setattr(cli, "build_contributor_provider", lambda budget: fake)
+    doc = jrun("reviews", "contributors", run_id, "--liked", l1, "--expand", "2")
+    assert [e["author_id"] for e in doc["expanded"]] == [B]
+    assert len(doc["errors"]) == 1 and A in doc["errors"][0] and doc["stopped"] is None
+
+
+def test_expand_needs_liked_and_a_token(contributor_run):
+    run_id, l1, _ = contributor_run
+    run_cli("reviews", "contributors", run_id, "--expand", "2", expect=2)
+    result = run_cli("reviews", "contributors", run_id, "--liked", l1, "--expand", "2", expect=2)
+    assert "APIFY_TOKEN" in result.output
+
+
+def test_contributors_help_states_cost():
+    out = run_cli("reviews", "contributors", "--help").stdout.lower()
+    assert "apify" in out and "unverified" in out and "--expand" in out

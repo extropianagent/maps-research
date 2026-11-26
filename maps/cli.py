@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import importlib.util
 import json
 import math
 import os
@@ -28,12 +29,21 @@ from .budget import Budget, BudgetExceeded, Ledger, current_month
 from .geography import BBox
 from .models import Hit, Place, Query
 from .pricing import PRICES_CHECKED, SKUS
-from .providers.apify import ApifyProvider
+from .providers.apify import ApifyProvider, parse_contributor
 from .providers.base import ProviderError, QuotaExceeded
 from .providers.dataforseo import DataForSEOProvider
+from .providers.google_agent_tools import MapsAgentTools
 from .providers.google_aggregate import PlacesAggregate
 from .providers.google_places import GooglePlaces
 from .reviews import ReviewIndex, co_review_graph, contributor_overlap, integrity_report
+from .semantic import (
+    DEFAULT_MODEL,
+    FastEmbedEmbedder,
+    SemanticIndex,
+    SemanticUnavailable,
+    aggregate_by_place,
+    hybrid_search,
+)
 from .sim import SimProvider
 from .store import RunStore
 
@@ -41,6 +51,7 @@ from .store import RunStore
 ENV_VARS: dict[str, list[str]] = {
     "google": ["GOOGLE_MAPS_API_KEY"],
     "google_aggregate": ["GOOGLE_MAPS_API_KEY"],
+    "google_agent_tools": ["GOOGLE_MAPS_API_KEY"],
     "apify": ["APIFY_TOKEN"],
     "dataforseo": ["DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"],
     "sim": [],
@@ -367,6 +378,8 @@ def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BB
             out.append(GooglePlaces(budget, tier=tier or "enterprise"))
         elif name == "google_aggregate":
             out.append(PlacesAggregate(budget))
+        elif name == "google_agent_tools":
+            out.append(MapsAgentTools(budget))
         elif name == "apify":
             out.append(ApifyProvider(budget))
         elif name == "dataforseo":
@@ -380,6 +393,28 @@ def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BB
         else:
             raise CliError(f"unknown provider {name!r}")
     return out
+
+
+def build_agent_tools(budget: Budget) -> Any:
+    """The Maps Experience agent-tools client. One function so tests can swap in a fake."""
+    return MapsAgentTools(budget)
+
+
+def build_embedder(model: str) -> Any:
+    """The local embedding model (loaded lazily). One function so tests can swap in a fake."""
+    return FastEmbedEmbedder(model)
+
+
+def build_contributor_provider(budget: Budget) -> Any:
+    """The provider that looks up a contributor's reviews. One function so tests can swap in a fake."""
+    return ApifyProvider(budget)
+
+
+def _importable(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _unavailable(name: str) -> str:
@@ -539,6 +574,8 @@ def main() -> None:
     Typical flow: `maps doctor` (what is configured), `maps search -q bakery --area Riyadh`
     (discover places; prints a run id), then `maps rank RUN` (re-rank for free),
     `maps reviews fetch RUN` and `maps reviews search RUN "slow service"` (read reviews).
+    `maps discover "quiet bakery known for sourdough"` finds places by meaning; `maps reviews search
+    RUN "phrase" --mode hybrid` searches review text by meaning as well as keywords.
 
     Every command prints ONE JSON document on stdout (or markdown with --format md); progress and
     warnings go to stderr. User errors exit 2 with one line on stderr. Stopping early because of the
@@ -562,6 +599,10 @@ def doctor() -> None:
             "state_dir": str(config.state_dir()),
             "retention_days": config.retention_days(),
             "providers": {p.name: {"available": p.available(), "env": ENV_VARS[p.name]} for p in probe},
+            "features": {
+                "semantic": {"installed": _importable("fastembed"), "install": "uv sync --extra semantic"},
+                "mcp": {"installed": _importable("mcp"), "install": "uv sync --extra mcp"},
+            },
             "prices_checked": PRICES_CHECKED,
             "runs": len(store.list_runs(config.state_dir())),
         }
@@ -698,7 +739,7 @@ def search(
 
     budget = make_budget(cost)
     bbox, label = resolve_bbox(loc, budget)
-    if bbox is None and run:
+    if bbox is None and run and spec.get("bbox"):
         bbox = BBox.parse(spec["bbox"])
     if bbox is None:
         if set(names) != {"sim"}:
@@ -881,6 +922,88 @@ def enumerate_cmd(
     )
 
 
+SOURCE_NOTE = (
+    "Results come from Google's Maps Experience agent tools; keep the Google Maps links with anything "
+    "you pass on, and show each place's attribution with grounded output."
+)
+
+
+@main.command()
+@click.argument("text")
+@location_options
+@click.option("--into", "into_id", metavar="RUN_ID", help="Add the places to this run instead of a new one.")
+@click.option("--lang", "language", metavar="CODE", help="Language of the results, e.g. en or ar.")
+@cost_options
+def discover(text: str, loc: Location, into_id: str | None, language: str | None, cost: Cost) -> None:
+    """Find places by meaning, e.g. "quiet bakery known for sourdough". Cost: free while Experimental.
+
+    Asks Google's Maps Experience agent tools, which understand descriptions rather than keywords,
+    and returns a short curated list (not a full census). The location is optional; the text may name
+    the place. Google offers the tools free while they stay Experimental (unconfirmed; the budget
+    guard still records each call). Places arrive as IDs, coordinates and Maps links only (the service gives no names): follow with `maps details RUN
+    --missing`, then `maps rank RUN`. Unverified against the live service. Stops cleanly (exit 0) on
+    budget or quota.
+    """
+    budget = make_budget(cost)
+    bbox, label = resolve_bbox(loc, budget)
+    tools = build_agent_tools(budget)
+    if not tools.available():
+        raise CliError("discover needs GOOGLE_MAPS_API_KEY (see docs/setup.md)")
+    run = _open_run(into_id) if into_id else None
+    stopped = None
+    found = None
+    try:
+        found = tools.search_places(text, bbox=bbox, language=language)
+    except (BudgetExceeded, QuotaExceeded) as e:
+        stopped = str(e)
+    places = list(found.places) if found else []
+    notes = dict(found.notes) if found else {}
+    attributions = dict(found.attributions) if found else {}
+    if run is None and found is not None:
+        run = RunStore.create(
+            config.state_dir(),
+            {
+                "queries": [],
+                "discover": [text],
+                "bbox": bbox.key() if bbox else None,
+                "depth": None,
+                "providers": ["google_agent_tools"],
+                "cost": cost.mode,
+                "tier": None,
+                "area": label,
+            },
+        )
+    elif run is not None:
+        spec_discover = list(run.spec.get("discover") or [])
+        if text not in spec_discover:
+            _touch_spec(run, discover=[*spec_discover, text])
+    if run is not None and found is not None:
+        run.record(f"google_agent_tools|{text}|{bbox.key() if bbox else '-'}", places, saturated=False)
+    run_id = run.run_id if run else None
+    emit(
+        {
+            "run_id": run_id,
+            "query": text,
+            "found": len(places),
+            "places": [
+                {
+                    "place_id": p.place_id,
+                    "name": p.name,
+                    "maps_url": p.maps_url,
+                    "attribution": attributions.get(p.place_id),
+                    "note": notes.get(p.place_id),
+                }
+                for p in places
+            ],
+            "summary": found.summary if found else "",
+            "source_note": SOURCE_NOTE,
+            "stopped": stopped,
+            "budget": budget.summary(),
+            "next": [f"maps details {run_id} --missing", f"maps rank {run_id}"] if run_id else [],
+        }
+    )
+
+
 @main.command()
 @click.argument("run_id")
 @click.option("--missing", is_flag=True, help="Fetch every place that has no name yet (ID-only places).")
@@ -1025,10 +1148,36 @@ def _places_with_reviews(run: RunStore) -> dict[str, Place]:
 @click.option("--min-rating", type=float, help="Only reviews whose own star rating is >= this.")
 @click.option("--max-rating", type=float, help="Only reviews whose own star rating is <= this.")
 @click.option("--by-place", is_flag=True, help="Group matches by place instead of listing reviews.")
+@click.option(
+    "--mode",
+    type=click.Choice(["keyword", "semantic", "hybrid"]),
+    default="keyword",
+    show_default=True,
+    help="keyword: BM25 word matching. semantic: matches by meaning, so paraphrases and other "
+    "languages are found. hybrid: both rankings fused.",
+)
+@click.option(
+    "--model",
+    default=DEFAULT_MODEL,
+    show_default=True,
+    help="Embedding model for semantic and hybrid.",
+)
 def reviews_search(
-    run_id: str, query: str, top: int, min_rating: float | None, max_rating: float | None, by_place: bool
+    run_id: str,
+    query: str,
+    top: int,
+    min_rating: float | None,
+    max_rating: float | None,
+    by_place: bool,
+    mode: str,
+    model: str,
 ) -> None:
-    """Search review text with BM25. Cost: free, makes no API call.
+    """Search review text. Cost: free, makes no API call.
+
+    Modes: keyword = BM25 word matching; semantic = meaning (finds paraphrases and other languages);
+    hybrid = both rankings fused. The embedding model runs locally, so review text never leaves this
+    machine; the first semantic or hybrid use downloads the model (needs `uv sync --extra semantic`);
+    vectors are cached in the run directory.
 
     Only searches reviews already fetched into this run (`maps reviews fetch`); Google returns at
     most 5 per place, so absence of a match is weak evidence.
@@ -1036,36 +1185,65 @@ def reviews_search(
     run = _open_run(run_id)
     with_reviews = _places_with_reviews(run)
     index = ReviewIndex(with_reviews.values())
-    if by_place:
-        results = [
-            {
-                "place_id": m.place_id,
-                "name": m.place_name,
-                "score": round(m.score, 3),
-                "n_matches": m.n_matches,
-                "best": render.review_block(m.best, m.place_name),
-            }
-            for m in index.search_places(query, top=top)
-        ]
+    if mode == "keyword":
+        if by_place:
+            results = [
+                {
+                    "place_id": m.place_id,
+                    "name": m.place_name,
+                    "score": round(m.score, 3),
+                    "n_matches": m.n_matches,
+                    "best": render.review_block(m.best, m.place_name),
+                }
+                for m in index.search_places(query, top=top)
+            ]
+        else:
+            results = [
+                render.review_block(m, m.place_name)
+                for m in index.search(query, top=top, min_rating=min_rating, max_rating=max_rating)
+            ]
     else:
-        results = [
-            render.review_block(m, m.place_name)
-            for m in index.search(query, top=top, min_rating=min_rating, max_rating=max_rating)
-        ]
-    emit(
-        {
-            "run_id": run_id,
-            "query": query,
-            "reviews_indexed": len(index),
-            "places_with_reviews": len(with_reviews),
-            "coverage_note": (
-                "Only reviews fetched into this run were searched "
-                f"({len(index)} reviews across {len(with_reviews)} of {len(run.places())} places); "
-                "run `maps reviews fetch` for more places."
-            ),
-            "results": results,
-        }
-    )
+        try:
+            sem = SemanticIndex(
+                with_reviews.values(), build_embedder(model), cache_path=run.dir / "embeddings.json"
+            )
+            depth = max(len(sem), 1) if by_place else top
+            bounds = {"min_rating": min_rating, "max_rating": max_rating}
+            if mode == "semantic":
+                matches = sem.search(query, top=depth, **bounds)
+            else:
+                matches = hybrid_search(index, sem, query, top=depth, **bounds)
+        except SemanticUnavailable as e:
+            raise CliError(str(e)) from None
+        if by_place:
+            results = [
+                {
+                    "place_id": m.place_id,
+                    "name": m.place_name,
+                    "score": round(m.score, 3),
+                    "n_matches": m.n_matches,
+                    "best": render.review_block(m.best, m.place_name),
+                }
+                for m in aggregate_by_place(matches, top=top)
+            ]
+        else:
+            results = [render.review_block(m, m.place_name) for m in matches]
+    doc: dict[str, Any] = {
+        "run_id": run_id,
+        "query": query,
+        "mode": mode,
+        "reviews_indexed": len(index),
+        "places_with_reviews": len(with_reviews),
+        "coverage_note": (
+            "Only reviews fetched into this run were searched "
+            f"({len(index)} reviews across {len(with_reviews)} of {len(run.places())} places); "
+            "run `maps reviews fetch` for more places."
+        ),
+        "results": results,
+    }
+    if mode != "keyword":
+        doc["model"] = model
+    emit(doc)
 
 
 @reviews_group.command("integrity")
@@ -1100,6 +1278,43 @@ def reviews_integrity(run_id: str, place_ids: tuple[str, ...], top: int | None) 
     emit({"run_id": run_id, "places_checked": len(reports), "places": reports})
 
 
+PRIVACY_NOTE = (
+    "This looks up individual reviewers' public review histories through a scraper; see docs/permissions.md."
+)
+
+
+def _with_contributor_ids(places: list[Place]) -> list[Place]:
+    """Copies whose reviewer ids are normalised, so a URL and a bare id of one person match."""
+    out = []
+    for place in places:
+        copy = Place.from_dict(place.to_dict())
+        for r in copy.reviews:
+            if r.author_id:
+                try:
+                    r.author_id = parse_contributor(r.author_id)[0]
+                except ValueError:
+                    pass
+        out.append(copy)
+    return out
+
+
+def _expansion_candidates(places: list[Place], liked: set[str], min_rating: float) -> list[str]:
+    """Contributor ids who rated a liked place >= min_rating, most liked places first, then by id."""
+    endorsed: dict[str, set[str]] = {}
+    for place in places:
+        if place.place_id not in liked:
+            continue
+        for r in place.reviews:
+            if not r.author_id or r.rating is None or r.rating < min_rating:
+                continue
+            try:
+                cid, _ = parse_contributor(r.author_id)
+            except ValueError:
+                continue
+            endorsed.setdefault(cid, set()).add(place.place_id)
+    return sorted(endorsed, key=lambda c: (-len(endorsed[c]), c))
+
+
 @reviews_group.command("contributors")
 @click.argument("run_id")
 @click.option(
@@ -1116,13 +1331,91 @@ def reviews_integrity(run_id: str, place_ids: tuple[str, ...], top: int | None) 
     show_default=True,
     help="Minimum places a reviewer must have reviewed to be listed.",
 )
-def reviews_contributors(run_id: str, liked: tuple[str, ...], min_shared: int) -> None:
-    """Reviewers who reviewed several places in the run. Cost: free, makes no API call."""
+@click.option(
+    "--expand",
+    "expand",
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Look up the public review histories of N contributors who rated a --liked place highly, "
+    "and add the places they reviewed to the run. Needs --liked and APIFY_TOKEN.",
+)
+@click.option(
+    "--min-rating",
+    type=float,
+    default=4.0,
+    show_default=True,
+    help="With --expand/--liked: a rating at or above this counts as endorsing a place.",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=10,
+    show_default=True,
+    help="With --expand: reviews to fetch per contributor.",
+)
+@cost_options
+def reviews_contributors(
+    run_id: str,
+    liked: tuple[str, ...],
+    min_shared: int,
+    expand: int | None,
+    min_rating: float,
+    limit: int,
+    cost: Cost,
+) -> None:
+    """Reviewers who reviewed several places in the run. Cost: free, unless --expand is used.
+
+    --expand N looks up N contributors through Apify, billed per result (--limit per contributor);
+    --cost free allows it only inside the monthly free credit. Contributors already looked up in this
+    run are replayed for free. Unverified against the live actor. It reads individual reviewers'
+    public histories: see docs/permissions.md.
+    """
     run = _open_run(run_id)
+    if expand and not liked:
+        raise CliError("--expand needs at least one --liked PLACE_ID")
+    extra: dict[str, Any] = {}
+    if expand:
+        budget = make_budget(cost)
+        prov = build_contributor_provider(budget)
+        if not prov.available():
+            raise CliError("--expand needs APIFY_TOKEN (see docs/setup.md)")
+        before = set(run.places())
+        candidates = _expansion_candidates(list(_places_with_reviews(run).values()), set(liked), min_rating)[
+            :expand
+        ]
+        expanded: list[dict[str, Any]] = []
+        errors: list[str] = []
+        stopped = None
+        for cid in candidates:
+            key = f"apify_contributor|{cid}|{limit}"
+            if run.done(key) is not None:
+                continue
+            try:
+                got = prov.contributor_reviews(cid, limit=limit)
+            except (BudgetExceeded, QuotaExceeded) as e:
+                stopped = str(e)
+                break
+            except ProviderError as e:
+                errors.append(f"{cid}: {e}")
+                continue
+            run.record(key, got, saturated=False)
+            expanded.append({"author_id": cid, "places_added": len(got)})
+            warn(f"[{len(expanded)}/{len(candidates)}] contributor {cid}: {len(got)} places")
+        extra = {
+            "expanded": expanded,
+            "new_places": len(set(run.places()) - before),
+            "stopped": stopped,
+            "errors": errors,
+            "budget": budget.summary(),
+            "privacy_note": PRIVACY_NOTE,
+        }
     places = list(_places_with_reviews(run).values())
+    if expand:
+        places = _with_contributor_ids(places)
     doc: dict[str, Any] = {"run_id": run_id, "contributors": co_review_graph(places, min_shared=min_shared)}
     if liked:
-        doc["overlap"] = contributor_overlap(places, set(liked))
+        doc["overlap"] = contributor_overlap(places, set(liked), min_rating=min_rating)
+    doc.update(extra)
     emit(doc)
 
 

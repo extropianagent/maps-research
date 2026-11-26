@@ -41,7 +41,10 @@ SKUS: dict[str, Sku] = {
     # --- Google Places Aggregate API ---
     "google.aggregate": Sku("google", 5_000, 0.010, "Places Aggregate computeInsights"),
     "google.agent_tools.search": Sku(
-        "google", float("inf"), 0.0, "Maps Experience agent tools search_places (free while Experimental; unconfirmed)"
+        "google",
+        float("inf"),
+        0.0,
+        "Maps Experience agent tools search_places (free while Experimental; unconfirmed)",
     ),
     # --- Apify: unit = one scraped place / one scraped review ---
     "apify.place": Sku("apify", 0, 0.004, "Google Maps scraper, per place"),

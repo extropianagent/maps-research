@@ -2,28 +2,38 @@
 
 Why: Google's own MCP server answers natural-language place questions ("quiet bakery known for
 sourdough"). The toolkit uses it for SEMANTIC DISCOVERY next to keyword Text Search, which cannot
-express that kind of intent. It returns a short curated list (documented as up to 5 places), so
+express that kind of intent. It returns a short curated list (5 places by default, 10 at most), so
 `text_search` never reports `saturated`: there is no cap-ranking to subdivide.
 
 Transport: MCP Streamable HTTP, spoken directly with httpx (no new dependency): JSON-RPC 2.0 POSTs
 to one endpoint, `initialize` -> `notifications/initialized` -> `tools/list` -> `tools/call`.
-Replies are plain JSON or SSE-framed; both are parsed. Auth is the `X-Goog-Api-Key` header only.
+Replies are plain JSON or SSE-framed; both are parsed. Auth is the `X-Goog-Api-Key` header only. The
+input schema is still read from `tools/list` (free) so a changed schema fails loudly, not silently.
 
-What could be CONFIRMED (search excerpts of developers.google.com, 2026-11-26; the site itself is
-blocked from this machine): the endpoint, the tool name `search_places`, that `text_query` is the
-mandatory input, that `location_bias` carries a `circle` (center and optional radius), and that
-the proto-style names are camelCase (`textQuery`, `languageCode`) while prose uses snake_case.
+CONFIRMED by the live `tools/list` response (captured 2026-11-26, saved verbatim as
+tests/fixtures/google_agent_tools_tools_list.json): the endpoint answers `initialize` (protocol
+"2025-06-18", serverInfo "StatelessServer", no session id header) and `tools/list` without a key.
+Tools offered: search_places, lookup_weather, compute_routes, search_along_route, resolve_names,
+resolve_maps_urls; only search_places is used here. Input (camelCase): `textQuery` (required),
+`locationBias` = {circle: {center: {latitude, longitude}, radiusMeters <= 50,000}} (a circle is the
+only bias shape), `languageCode`, `regionCode`, `pageSize` (1-10, default 5; above 5 is a higher
+billing tier), `includeExtendedDetails` (true triggers the Pro tier). Output (`outputSchema`):
+`places[]` of PlaceView {id, place "places/{id}", location, googleMapsLinks, attribution
+{title, url}}, a `summary` whose zero-based citations "[0]" index into `places`, and `contentToken`.
+There is NO place-name field. The tool description requires grounded output to be attributed with
+the `attribution` field, so this module keeps it (`attributions`) and never passes it off as a name.
 
-What could NOT be confirmed: the exact `inputSchema` JSON, the result shape (`structuredContent`
-vs text), the field names for place ids, names and links, whether a rectangle bias exists, the
-protocol version the server negotiates, and billing. Nothing here is verified against a live call.
-So the input schema is DISCOVERED from `tools/list` at runtime and mapped by property name, and
-results are parsed defensively (JSON walk plus regex). When a live call settles these, update
-`docs/live-verification.md` and this module together.
+Free-first: `pageSize` is clamped to 1..5 and anything larger is refused; `includeExtendedDetails`
+is never sent.
 
-Terms (from the same excerpts, unverified): keep Google Maps source links with any output, and do
-not send the output to a model that trains on or retains its input. Callers own that duty; this
-module keeps `maps_url` and the tool's summary text (`notes`) so they can.
+STILL UNCONFIRMED (needs a call with a real key): behaviour of `tools/call`, billing and quota,
+whether the text content mirrors `structuredContent` (results are read from `structuredContent`,
+else a JSON document in the first text item, else a regex over the text), and the Terms of Service
+duties around retention. Update `docs/live-verification.md` and this module together when settled.
+
+Terms (unverified): keep Google Maps source links with any output, and do not send the output to a
+model that trains on or retains its input. Callers own that duty; this module keeps `maps_url`,
+`attributions` and the `summary` so they can.
 
 Every `tools/call` is charged to the budget immediately before it is sent; `initialize` and
 `tools/list` are not billable.
@@ -49,14 +59,13 @@ PROTOCOL_VERSION = "2025-06-18"
 TOOL_NAME = "search_places"
 SKU = "google.agent_tools.search"
 RAW_TEXT_LIMIT = 2_000
-MAX_BIAS_RADIUS_M = 50_000.0  # Places APIs cap circle radii at 50 km; assumed to hold here too
+MAX_BIAS_RADIUS_M = 50_000.0  # inputSchema: "The radius must be within 50,000 meters"
+MAX_FREE_PAGE_SIZE = 5  # pageSize above 5 is billed at a higher tier
 
-_QUERY_NAMES = ("text_query", "textQuery", "query", "text")
-_BIAS_NAMES = ("location_bias", "locationBias")
-_ID_KEYS = ("place_id", "placeId", "id", "place")
-_NAME_KEYS = ("displayName", "display_name", "name", "title")
-_URL_KEYS = ("googleMapsUri", "google_maps_uri", "googleMapsUrl", "mapsUri", "maps_url", "url", "link", "uri")
-_NOTE_KEYS = ("summary", "editorialSummary", "description", "snippet", "text")
+_QUERY_NAMES = ("textQuery", "text_query", "query", "text")
+_BIAS_NAMES = ("locationBias", "location_bias")
+_PAGE_SIZE_NAMES = ("pageSize", "page_size")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?\u061f\u3002])\s+")
 _PLACE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 _TEXT_ID_RES = (re.compile(r"places/([A-Za-z0-9_-]{10,})"), re.compile(r"\b(ChIJ[A-Za-z0-9_-]{10,})"))
 
@@ -64,7 +73,11 @@ _TEXT_ID_RES = (re.compile(r"places/([A-Za-z0-9_-]{10,})"), re.compile(r"\b(ChIJ
 @dataclass
 class AgentSearchResult:
     places: list[Place] = field(default_factory=list)
-    # The tool's own summary text per place id; kept apart because no Place field fits it.
+    # The service's natural-language summary; its "[i]" citations index into `places` in order.
+    summary: str = ""
+    # Required attribution per place id ({"title", "url"}); show it with any grounded output.
+    attributions: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Per place id: the summary sentences citing that place; kept apart because no Place field fits.
     notes: dict[str, str] = field(default_factory=dict)
     raw_text: str = ""  # first RAW_TEXT_LIMIT chars of the tool's text, for debugging and attribution
 
@@ -140,7 +153,7 @@ def _first_key(props: dict[str, Any], *candidates: str) -> str | None:
 def build_location_bias(
     prop_schema: dict[str, Any], root: dict[str, Any], bbox: BBox
 ) -> dict[str, Any] | None:
-    """Fill a circle or rectangle bias per its sub-schema; None when it is not recognisable."""
+    """Fill a circle bias per its sub-schema (the only shape offered); None when not recognisable."""
     sub = _properties(prop_schema, root)
     circle = sub.get("circle")
     if circle is not None:
@@ -156,36 +169,17 @@ def build_location_bias(
                 if rkey:
                     out[rkey] = min(max(bbox.circumradius_m, 1.0), MAX_BIAS_RADIUS_M)
                 return {"circle": out}
-    rect = sub.get("rectangle")
-    if rect is not None:
-        rprops = _properties(rect, root)
-        if "low" in rprops and "high" in rprops:
-            low = _properties(rprops["low"], root)
-            lat, lng = _first_key(low, "latitude", "lat"), _first_key(low, "longitude", "lng", "lon")
-            if lat and lng:
-                return {
-                    "rectangle": {
-                        "low": {lat: bbox.south, lng: bbox.west},
-                        "high": {lat: bbox.north, lng: bbox.east},
-                    }
-                }
     return None
 
 
 @dataclass
 class _Found:
     place_id: str
-    name: str = ""
+    lat: float | None = None
+    lng: float | None = None
     url: str | None = None
-    note: str = ""
-
-
-def _text_of(v: Any) -> str:
-    if isinstance(v, str):
-        return v.strip()
-    if isinstance(v, dict):
-        return _text_of(v.get("text"))
-    return ""
+    attribution: dict[str, str] | None = None
+    index: int = -1  # position in the service's `places`, which the summary's citations use
 
 
 def _normalise_id(v: Any) -> str | None:
@@ -195,28 +189,45 @@ def _normalise_id(v: Any) -> str | None:
     return v if _PLACE_ID_RE.match(v) else None
 
 
-def _is_google_url(v: Any) -> bool:
-    return isinstance(v, str) and bool(
-        re.match(r"https?://([\w-]+\.)*(google\.[a-z.]+|goo\.gl|g\.co)(/|$)", v)
+def _number(v: Any) -> float | None:
+    return float(v) if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+
+def _text(v: Any) -> str | None:
+    return v if isinstance(v, str) and v else None
+
+
+def _from_place_view(view: Any) -> _Found | None:
+    """One PlaceView of the real outputSchema; None when it carries no usable place id."""
+    if not isinstance(view, dict):
+        return None
+    pid = _normalise_id(view.get("id")) or _normalise_id(view.get("place"))
+    if pid is None:
+        return None
+    loc = view.get("location") if isinstance(view.get("location"), dict) else {}
+    links = view.get("googleMapsLinks") if isinstance(view.get("googleMapsLinks"), dict) else {}
+    attr = view.get("attribution") if isinstance(view.get("attribution"), dict) else {}
+    attribution = None
+    if attr:
+        attribution = {"title": _text(attr.get("title")) or "", "url": _text(attr.get("url")) or ""}
+    return _Found(
+        pid,
+        _number(loc.get("latitude")),
+        _number(loc.get("longitude")),
+        _text(links.get("placeUrl")),
+        attribution,
     )
 
 
-def _walk(node: Any, found: dict[str, _Found]) -> None:
-    """Collect places from any JSON shape: a dict with an id-like key describes one place."""
-    if isinstance(node, list):
-        for item in node:
-            _walk(item, found)
-    elif isinstance(node, dict):
-        pid = next((p for k in _ID_KEYS if (p := _normalise_id(node.get(k)))), None)
-        if pid:
-            f = found.setdefault(pid, _Found(pid))
-            f.name = f.name or next((t for k in _NAME_KEYS if (t := _text_of(node.get(k)))), "")
-            f.name = "" if f.name.startswith("places/") else f.name
-            f.url = f.url or next((u for k in _URL_KEYS if _is_google_url(u := node.get(k))), None)
-            f.note = f.note or next((t for k in _NOTE_KEYS if (t := _text_of(node.get(k)))), "")
-        for value in node.values():
-            if isinstance(value, dict | list):
-                _walk(value, found)
+def _notes_from_summary(summary: str, count: int) -> dict[int, str]:
+    """For place index i, the summary sentences containing "[i]", joined by a space."""
+    sentences = [s for s in _SENTENCE_SPLIT_RE.split(summary.strip()) if s]
+    notes: dict[int, str] = {}
+    for i in range(count):
+        cited = [s for s in sentences if f"[{i}]" in s]
+        if cited:
+            notes[i] = " ".join(cited)
+    return notes
 
 
 # -- provider -------------------------------------------------------------------------------------
@@ -344,7 +355,9 @@ class MapsAgentTools:
 
     # -- argument mapping and result parsing --------------------------------------------------
 
-    def _arguments(self, text: str, bbox: BBox | None, language: str | None) -> dict[str, Any]:
+    def _arguments(
+        self, text: str, bbox: BBox | None, language: str | None, page_size: int | None = None
+    ) -> dict[str, Any]:
         schema = self.input_schema()
         props = _properties(schema, schema)
         qkey = _first_key(props, *_QUERY_NAMES)
@@ -366,41 +379,81 @@ class MapsAgentTools:
             bias = build_location_bias(props[bkey], schema, bbox)
             if bias:
                 args[bkey] = bias
+        pkey = _first_key(props, *_PAGE_SIZE_NAMES)
+        if page_size is not None and pkey:
+            args[pkey] = page_size
         return args
 
     @staticmethod
-    def _parse(result: dict[str, Any]) -> tuple[list[_Found], str]:
-        found: dict[str, _Found] = {}
-        texts: list[str] = []
-        _walk(result.get("structuredContent"), found)
-        for block in result.get("content") or []:
-            if not (isinstance(block, dict) and isinstance(block.get("text"), str)):
-                continue
-            text = block["text"]
-            texts.append(text)
-            try:
-                _walk(json.loads(text), found)
-            except ValueError:
-                pass
+    def _parse(result: dict[str, Any]) -> tuple[list[_Found], str, str, str]:
+        """(places, summary, raw text, source) from structuredContent, else JSON text, else regex."""
+        texts = [
+            b["text"]
+            for b in result.get("content") or []
+            if isinstance(b, dict) and isinstance(b.get("text"), str)
+        ]
         blob = "\n".join(texts)
+        doc: Any = result.get("structuredContent")
+        if not (isinstance(doc, dict) and isinstance(doc.get("places"), list)):
+            doc = None
+            if texts:
+                try:
+                    inner = json.loads(texts[0])
+                except ValueError:
+                    inner = None
+                if isinstance(inner, dict) and isinstance(inner.get("places"), list):
+                    doc = inner
+        if doc is not None:
+            found: dict[str, _Found] = {}
+            for n, view in enumerate(doc["places"]):
+                f = _from_place_view(view)
+                if f:
+                    f.index = n
+                    found.setdefault(f.place_id, f)
+            summary = doc.get("summary")
+            return list(found.values()), summary if isinstance(summary, str) else "", blob, "json"
+        ids: dict[str, _Found] = {}
         for rx in _TEXT_ID_RES:
             for m in rx.finditer(blob):
-                found.setdefault(m.group(1), _Found(m.group(1)))
-        # Regex hits found before a JSON walk of the same id would lose order; dict order is by
-        # first sighting, structured content first, which is the order that carries intent.
-        return list(found.values()), blob
+                ids.setdefault(m.group(1), _Found(m.group(1)))
+        return list(ids.values()), "", blob, "regex"
 
     # -- public API ---------------------------------------------------------------------------
 
     def search_places(
-        self, text: str, *, bbox: BBox | None = None, language: str | None = None
+        self,
+        text: str,
+        *,
+        bbox: BBox | None = None,
+        language: str | None = None,
+        page_size: int | None = None,
     ) -> AgentSearchResult:
-        return self._search(text, bbox=bbox, language=language, level=0)
+        """Semantic place search. Free-first: `pageSize` is sent only when asked, clamped to 1..5.
 
-    def _search(self, text: str, *, bbox: BBox | None, language: str | None, level: int) -> AgentSearchResult:
+        Asking for more than 5 raises ValueError (larger pages are billed at a higher tier that this
+        toolkit does not use). `includeExtendedDetails` is never sent (it triggers the Pro tier).
+        """
+        if page_size is not None:
+            if page_size > MAX_FREE_PAGE_SIZE:
+                raise ValueError(
+                    f"page_size {page_size} > {MAX_FREE_PAGE_SIZE}: larger pages are billed at a higher "
+                    "tier that this toolkit does not use"
+                )
+            page_size = max(page_size, 1)
+        return self._search(text, bbox=bbox, language=language, level=0, page_size=page_size)
+
+    def _search(
+        self,
+        text: str,
+        *,
+        bbox: BBox | None,
+        language: str | None,
+        level: int,
+        page_size: int | None = None,
+    ) -> AgentSearchResult:
         if not self._key:
             raise ProviderError("google_agent_tools: GOOGLE_MAPS_API_KEY is not set")
-        args = self._arguments(text, bbox, language)
+        args = self._arguments(text, bbox, language, page_size)
         self.budget.charge(SKU)
         result = self._rpc("tools/call", {"name": TOOL_NAME, "arguments": args})
         if result.get("isError"):
@@ -408,10 +461,11 @@ class MapsAgentTools:
                 b["text"] for b in result.get("content") or [] if isinstance(b, dict) and b.get("text")
             )
             raise ProviderError(self._scrub(f"google_agent_tools: tool error: {detail[:300]}".rstrip(": ")))
-        found, blob = self._parse(result)
-        out = AgentSearchResult(raw_text=blob[:RAW_TEXT_LIMIT])
+        found, summary, blob, _source = self._parse(result)
+        out = AgentSearchResult(summary=summary, raw_text=blob[:RAW_TEXT_LIMIT])
+        by_index = _notes_from_summary(summary, max((f.index for f in found), default=-1) + 1)
         for i, f in enumerate(found, start=1):
-            place = Place(place_id=f.place_id, name=f.name, maps_url=f.url)
+            place = Place(place_id=f.place_id, lat=f.lat, lng=f.lng, maps_url=f.url)
             place.hits.append(
                 Hit(
                     provider=self.name,
@@ -423,8 +477,10 @@ class MapsAgentTools:
                 )
             )
             out.places.append(place)
-            if f.note:
-                out.notes[f.place_id] = f.note
+            if f.attribution:
+                out.attributions[f.place_id] = f.attribution
+            if f.index in by_index:
+                out.notes[f.place_id] = by_index[f.index]
         return out
 
     # -- Provider protocol --------------------------------------------------------------------

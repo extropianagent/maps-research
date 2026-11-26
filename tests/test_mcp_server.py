@@ -17,6 +17,7 @@ EXPECTED_TOOLS = {
     "maps_rank",
     "maps_followups",
     "maps_census",
+    "maps_discover",
     "maps_details",
     "maps_reviews_fetch",
     "maps_reviews_search",
@@ -190,3 +191,60 @@ def test_http_app_enforces_bearer_token():
 
 def test_import_error_names_the_extra():
     assert "uv sync --extra mcp" in mcp_server.MISSING_MCP_MESSAGE
+
+
+# --- semantic search, discovery, contributor expansion --------------------------------------
+
+
+def test_discover_is_listed_with_cost_text():
+    async def fn(client):
+        return (await client.list_tools()).tools
+
+    tools = {t.name: t for t in with_client(fn)}
+    assert "Cost:" in (tools["maps_discover"].description or "")
+
+
+def test_discover_argv_defaults_to_free_and_carries_location():
+    argv = mcp_server.discover_argv("quiet bakery", near="24.7,46.7", radius=500.0, into="r1", lang="en")
+    assert argv[:2] == ["discover", "quiet bakery"]
+    assert argv[argv.index("--near") + 1] == "24.7,46.7" and argv[argv.index("--into") + 1] == "r1"
+    assert argv[argv.index("--lang") + 1] == "en" and argv[-2:] == ["--cost", "free"]
+
+
+def test_discover_usage_error_is_a_tool_error():
+    is_error, text = call("maps_discover", text="sourdough", bbox="garbage")
+    assert is_error and "\n" not in text.strip()
+    is_error, text = call("maps_discover", text="sourdough")  # no GOOGLE_MAPS_API_KEY
+    assert is_error and "GOOGLE_MAPS_API_KEY" in text
+
+
+def test_reviews_search_passes_mode_and_model(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mcp_server, "run_cli", lambda argv: seen.append(argv) or {})
+    mcp_server.maps_reviews_search("r1", "joints", mode="hybrid", model="m/x")
+    argv = seen[0]
+    assert argv[argv.index("--mode") + 1] == "hybrid" and argv[argv.index("--model") + 1] == "m/x"
+    mcp_server.maps_reviews_search("r1", "joints")
+    assert "--mode" not in seen[1]
+    monkeypatch.undo()
+    run_id = sim_search()["run_id"]
+    assert ok("maps_reviews_search", run_id=run_id, query="x", mode="keyword")["mode"] == "keyword"
+
+
+def test_contributors_passes_expansion_options(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mcp_server, "run_cli", lambda argv: seen.append(argv) or {})
+    mcp_server.maps_reviews_contributors(
+        "r1", liked=["p1"], expand=3, min_rating=4.5, limit=5, cost="quality", max_usd=1.0
+    )
+    argv = seen[0]
+    for flag, val in (("--expand", "3"), ("--min-rating", "4.5"), ("--limit", "5"), ("--max-usd", "1.0")):
+        assert argv[argv.index(flag) + 1] == val
+    mcp_server.maps_reviews_contributors("r1")
+    assert seen[1][-2:] == ["--cost", "free"]
+
+
+def test_contributors_expand_without_liked_is_a_tool_error():
+    run_id = sim_search()["run_id"]
+    is_error, text = call("maps_reviews_contributors", run_id=run_id, expand=2)
+    assert is_error and "--liked" in text

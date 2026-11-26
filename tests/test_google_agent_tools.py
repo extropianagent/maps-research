@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -12,8 +13,9 @@ from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.geography import BBox
 from maps.models import Query
 from maps.providers.base import Provider, ProviderError, QuotaExceeded, SearchPage
-from maps.providers.google_agent_tools import DEFAULT_ENDPOINT, MapsAgentTools
+from maps.providers.google_agent_tools import DEFAULT_ENDPOINT, AgentSearchResult, MapsAgentTools
 
+FIXTURE = Path(__file__).parent / "fixtures" / "google_agent_tools_tools_list.json"
 KEY = "SECRET-KEY-123"
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
 PID1, PID2, PID3 = "ChIJaaaaaaaaaa1", "ChIJbbbbbbbbbb2", "ChIJcccccccccc3"
@@ -56,6 +58,7 @@ class Server:
         self.session = session
         self.requests: list[httpx.Request] = []
         self.on_call = None  # optional hook run before a tools/call reply
+        self.live_listing = False  # reply to tools/list with the captured live response
 
     def bodies(self) -> list[dict]:
         return [json.loads(r.content) for r in self.requests]
@@ -82,6 +85,9 @@ class Server:
             return self._reply(body["id"], {"protocolVersion": "2025-06-18", "capabilities": {}})
         if method == "notifications/initialized":
             return httpx.Response(202)
+        if method == "tools/list" and self.live_listing:
+            live = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            return self._reply(body["id"], live["result"])
         if method == "tools/list":
             tool = {"name": "search_places", "inputSchema": self.input_schema}
             other = {"name": "lookup_weather", "inputSchema": {}}
@@ -204,33 +210,29 @@ def test_language_and_circle_bias_filled_from_schema():
     assert 0 < circle["radius"] <= 50_000
 
 
-def test_camelcase_variant_with_rectangle_and_refs():
+def test_rectangle_only_bias_is_skipped_because_a_circle_is_the_only_bias_shape():
     sch = {
         "type": "object",
-        "$defs": {
-            "LatLng": {"type": "object", "properties": {"latitude": {}, "longitude": {}}},
-            "Rect": {
-                "type": "object",
-                "properties": {"low": {"$ref": "#/$defs/LatLng"}, "high": {"$ref": "#/$defs/LatLng"}},
-            },
-        },
         "properties": {
             "textQuery": {"type": "string"},
-            "languageCode": {"type": "string"},
-            "locationBias": {"type": "object", "properties": {"rectangle": {"$ref": "#/$defs/Rect"}}},
+            "locationBias": {
+                "type": "object",
+                "properties": {
+                    "rectangle": {
+                        "type": "object",
+                        "properties": {
+                            "low": {"type": "object", "properties": {"latitude": {}, "longitude": {}}},
+                            "high": {"type": "object", "properties": {"latitude": {}, "longitude": {}}},
+                        },
+                    }
+                },
+            },
         },
     }
     s = Server(input_schema=sch)
     p, _ = make(s)
-    p.search_places("bakery", bbox=BBOX, language="en")
-    args = s.calls()[0]["params"]["arguments"]
-    assert args["languageCode"] == "en"
-    assert args["locationBias"] == {
-        "rectangle": {
-            "low": {"latitude": 24.0, "longitude": 46.0},
-            "high": {"latitude": 25.0, "longitude": 47.0},
-        }
-    }
+    p.search_places("bakery", bbox=BBOX)
+    assert s.calls()[0]["params"]["arguments"] == {"textQuery": "bakery"}
 
 
 def test_unrecognisable_bias_and_missing_language_property_are_skipped():
@@ -274,10 +276,10 @@ def test_schema_cached_and_session_reused_across_searches():
 
 
 def test_sse_framed_responses_parse():
-    s = Server(sse=True, call_result=structured({"id": PID1, "displayName": {"text": "Loaf"}}))
+    s = Server(sse=True, call_result=structured({"id": PID1, "googleMapsLinks": {"placeUrl": "https://x/1"}}))
     p, _ = make(s)
     res = p.search_places("bakery")
-    assert [(x.place_id, x.name) for x in res.places] == [(PID1, "Loaf")]
+    assert [(x.place_id, x.maps_url) for x in res.places] == [(PID1, "https://x/1")]
 
 
 def test_sse_picks_reply_matching_request_after_notifications():
@@ -297,27 +299,102 @@ def test_sse_picks_reply_matching_request_after_notifications():
 # -- result parsing -------------------------------------------------------------------------
 
 
-def test_ids_from_structured_content_with_name_url_and_notes():
-    result = structured(
-        {
-            "place": "places/" + PID1,
-            "displayName": {"text": "Loaf"},
-            "googleMapsUri": "https://maps.google.com/?cid=1",
-            "summary": "Tiny sourdough bakery.",
-        },
-        {"placeId": PID2, "name": "Crumb", "url": "https://www.google.com/maps/place/Crumb"},
-        {"id": PID3, "url": "https://example.com/not-maps"},
-    )
-    p, _ = make(Server(call_result=result))
-    res = p.search_places("bakery")
+SUMMARY = (
+    "Loaf is a quiet sourdough bakery [0]. It opens early [0]. Crumb is a busy cafe. "
+    "Rye Room also bakes sourdough on weekends [2]."
+)
+
+
+def view(pid: str, n: int, *, via_resource: bool = False) -> dict:
+    out = {
+        "location": {"latitude": 24.0 + n / 10, "longitude": 46.0 + n / 10},
+        "googleMapsLinks": {"placeUrl": f"https://maps.google.com/?cid={n}", "reviewsUrl": f"https://r/{n}"},
+        "attribution": {"title": f"Google Maps {n}", "url": f"https://attr.example/{n}"},
+    }
+    if via_resource:
+        out["place"] = "places/" + pid
+    else:
+        out["id"] = pid
+        out["place"] = "places/" + pid
+    return out
+
+
+def realistic(**extra: Any) -> dict:
+    return {
+        "places": [view(PID1, 1), view(PID2, 2, via_resource=True), view(PID3, 3)],
+        "summary": SUMMARY,
+        "contentToken": "tok",
+        **extra,
+    }
+
+
+def check_realistic(res: AgentSearchResult) -> None:
     assert [x.place_id for x in res.places] == [PID1, PID2, PID3]
-    assert [x.name for x in res.places] == ["Loaf", "Crumb", ""]
-    assert [x.maps_url for x in res.places] == [
-        "https://maps.google.com/?cid=1",
-        "https://www.google.com/maps/place/Crumb",
-        None,
-    ]
-    assert res.notes == {PID1: "Tiny sourdough bakery."}
+    assert [x.name for x in res.places] == ["", "", ""]  # the service gives no name
+    assert [(x.lat, x.lng) for x in res.places] == [(24.1, 46.1), (24.2, 46.2), (24.3, 46.3)]
+    assert [x.maps_url for x in res.places] == [f"https://maps.google.com/?cid={n}" for n in (1, 2, 3)]
+    assert res.summary == SUMMARY
+    assert res.attributions[PID2] == {"title": "Google Maps 2", "url": "https://attr.example/2"}
+    assert set(res.attributions) == {PID1, PID2, PID3}
+    assert res.notes == {
+        PID1: "Loaf is a quiet sourdough bakery [0]. It opens early [0].",
+        PID3: "Rye Room also bakes sourdough on weekends [2].",
+    }
+    assert [x.hits[0].rank for x in res.places] == [1, 2, 3]
+
+
+def test_structured_content_per_output_schema():
+    p, _ = make(Server(call_result={"content": [], "structuredContent": realistic()}))
+    check_realistic(p.search_places("bakery"))
+
+
+def test_attribution_title_never_becomes_the_place_name():
+    p, _ = make(Server(call_result=structured(view(PID1, 1))))
+    res = p.search_places("bakery")
+    assert res.places[0].name == "" and res.attributions[PID1]["title"] == "Google Maps 1"
+
+
+def test_json_document_in_first_text_item_when_no_structured_content():
+    result = {"content": [{"type": "text", "text": json.dumps(realistic())}]}
+    p, _ = make(Server(call_result=result))
+    check_realistic(p.search_places("bakery"))
+
+
+def test_structured_content_wins_over_text():
+    result = {
+        "structuredContent": realistic(),
+        "content": [{"type": "text", "text": json.dumps({"places": [view(PID2, 2)], "summary": "other"})}],
+    }
+    p, _ = make(Server(call_result=result))
+    check_realistic(p.search_places("bakery"))
+
+
+def test_place_id_falls_back_to_resource_name():
+    p, _ = make(Server(call_result=structured({"place": "places/" + PID2})))
+    assert [x.place_id for x in p.search_places("x").places] == [PID2]
+
+
+def test_missing_optional_fields_leave_defaults():
+    p, _ = make(Server(call_result=structured({"id": PID1})))
+    res = p.search_places("x")
+    pl = res.places[0]
+    assert (pl.lat, pl.lng, pl.maps_url) == (None, None, None)
+    assert res.summary == "" and res.attributions == {} and res.notes == {}
+
+
+def test_citations_index_the_services_list_even_when_an_entry_is_unusable():
+    result = structured({"id": "bad"}, {"id": PID2})
+    result["structuredContent"]["summary"] = "Second is good [1]."
+    p, _ = make(Server(call_result=result))
+    assert p.search_places("x").notes == {PID2: "Second is good [1]."}
+
+
+def test_notes_do_not_confuse_citation_1_with_10():
+    summary = "Ten is far [10]. One is near [1]."
+    result = structured({"id": PID1}, {"id": PID2})
+    result["structuredContent"]["summary"] = summary
+    p, _ = make(Server(call_result=result))
+    assert p.search_places("x").notes == {PID2: "One is near [1]."}
 
 
 def test_ids_from_free_text_dedup_and_order():
@@ -326,17 +403,6 @@ def test_ids_from_free_text_dedup_and_order():
     res = p.search_places("bakery")
     assert [x.place_id for x in res.places] == [PID2, PID1, PID3]
     assert res.raw_text == text
-
-
-def test_ids_from_json_encoded_text_content_merge_with_structured():
-    inner = json.dumps({"places": [{"id": PID1, "displayName": "Loaf"}, {"id": PID2}]})
-    result = {
-        "structuredContent": {"places": [{"id": PID2, "displayName": {"text": "Crumb"}}]},
-        "content": [{"type": "text", "text": inner}],
-    }
-    p, _ = make(Server(call_result=result))
-    res = p.search_places("bakery")
-    assert [(x.place_id, x.name) for x in res.places] == [(PID2, "Crumb"), (PID1, "Loaf")]
 
 
 def test_short_ids_and_unrelated_strings_ignored():
@@ -349,6 +415,14 @@ def test_raw_text_truncated():
     result = {"content": [{"type": "text", "text": "z" * 5000}]}
     p, _ = make(Server(call_result=result))
     assert len(p.search_places("x").raw_text) == 2000
+
+
+def test_regex_fallback_has_no_summary_or_attribution():
+    text = f"places/{PID1}"
+    p, _ = make(Server(call_result={"content": [{"type": "text", "text": text}]}))
+    res = p.search_places("x")
+    assert [x.place_id for x in res.places] == [PID1]
+    assert res.summary == "" and res.attributions == {} and res.notes == {}
 
 
 def test_hits_rank_cell_language_level():
@@ -487,3 +561,97 @@ def test_text_search_accepts_plain_string_and_reviews_empty():
     p, _ = make(Server(call_result=structured({"id": PID1})))
     assert len(p.text_search("bakery", bbox=None).places) == 1
     assert p.reviews(PID1) == []
+
+
+# -- the live listing (tests/fixtures/google_agent_tools_tools_list.json) -------------------------
+
+QUERY = "quiet bakery known for sourdough in Riyadh"
+LIVE_BBOX = BBox(24.5, 46.5, 24.9, 46.9)
+
+
+def live_server(**kw) -> Server:
+    s = Server(session="", **kw)
+    s.live_listing = True
+    return s
+
+
+def test_fixture_is_the_live_search_places_listing():
+    tool = next(t for t in json.loads(FIXTURE.read_text())["result"]["tools"] if t["name"] == "search_places")
+    assert tool["inputSchema"]["required"] == ["textQuery"]
+    assert set(tool["inputSchema"]["properties"]) == {
+        "textQuery",
+        "locationBias",
+        "languageCode",
+        "regionCode",
+        "pageSize",
+        "includeExtendedDetails",
+    }
+
+
+def test_live_listing_arguments_are_exactly_the_documented_ones():
+    s = live_server(call_result=structured({"id": PID1}))
+    p, _ = make(s)
+    p.search_places(QUERY, bbox=LIVE_BBOX, language="ar")
+    lat, lng = LIVE_BBOX.center
+    assert s.calls()[0]["params"]["arguments"] == {
+        "textQuery": QUERY,
+        "languageCode": "ar",
+        "locationBias": {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lng},
+                "radiusMeters": min(LIVE_BBOX.circumradius_m, 50_000),
+            }
+        },
+    }
+    assert all("mcp-session-id" not in r.headers for r in s.requests)
+
+
+def test_live_listing_radius_is_capped_at_50km():
+    s = live_server(call_result=structured({"id": PID1}))
+    p, _ = make(s)
+    p.search_places(QUERY, bbox=BBox(20.0, 40.0, 30.0, 50.0))
+    circle = s.calls()[0]["params"]["arguments"]["locationBias"]["circle"]
+    assert circle["radiusMeters"] == 50_000
+
+
+def test_live_listing_query_only():
+    s = live_server(call_result=structured({"id": PID1}))
+    p, _ = make(s)
+    p.search_places(QUERY)
+    assert s.calls()[0]["params"]["arguments"] == {"textQuery": QUERY}
+
+
+# -- free-first page size -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("asked", "sent"), [(1, 1), (3, 3), (5, 5), (0, 1), (-4, 1)])
+def test_page_size_clamped_to_1_through_5(asked, sent):
+    s = live_server(call_result=structured({"id": PID1}))
+    p, _ = make(s)
+    p.search_places(QUERY, page_size=asked)
+    args = s.calls()[0]["params"]["arguments"]
+    assert args["pageSize"] == sent and "includeExtendedDetails" not in args
+
+
+@pytest.mark.parametrize("asked", [6, 10, 99])
+def test_page_size_above_5_is_refused_before_any_request_or_charge(asked):
+    s = live_server()
+    p, budget = make(s)
+    with pytest.raises(ValueError, match="higher tier"):
+        p.search_places(QUERY, page_size=asked)
+    assert s.requests == [] and budget.run_units == {}
+
+
+def test_page_size_never_sent_unless_asked_and_extended_details_never():
+    s = live_server(call_result=structured({"id": PID1}))
+    p, _ = make(s)
+    p.search_places(QUERY, bbox=LIVE_BBOX, language="en")
+    p.search_places(QUERY, page_size=2)
+    for c in s.calls():
+        assert "includeExtendedDetails" not in c["params"]["arguments"]
+    assert "pageSize" not in s.calls()[0]["params"]["arguments"]
+
+
+def test_docstring_states_extended_details_is_never_sent():
+    doc = MapsAgentTools.search_places.__doc__ or ""
+    assert "includeExtendedDetails" in doc and "never" in doc

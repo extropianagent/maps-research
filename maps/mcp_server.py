@@ -41,9 +41,9 @@ INSTRUCTIONS = """\
 Google Maps research toolkit. Free-first: every tool defaults to cost="free" and never spends money.
 Method:
 1. maps_doctor and maps_budget: what is configured and what allowance is left.
-2. maps_search with several keywords (and languages, 'text:lang'); read `coverage` and report its gaps.
+2. maps_search (several keywords/languages, 'text:lang') or maps_discover (by meaning); report `coverage` gaps.
 3. maps_rank re-ranks a stored run for free; try other objectives and filters before searching again.
-4. maps_followups suggests what to search next; maps_reviews_fetch then maps_reviews_search read reviews.
+4. maps_followups suggests searches; maps_reviews_fetch, then maps_reviews_search (mode="hybrid" = by meaning).
 5. maps_reviews_integrity and maps_reviews_contributors give evidence, never a verdict.
 Use cost="quality" only when the owner authorised spending and gave a ceiling (max_usd).
 Never claim coverage the run did not achieve. A budget-guard stop is a result, not a failure.
@@ -131,6 +131,27 @@ def location_args(
     radius: float | None = None,
 ) -> list[str]:
     return [*_opt("--area", area), *_opt("--bbox", bbox), *_opt("--near", near), *_opt("--radius", radius)]
+
+
+def discover_argv(
+    text: str,
+    area: str | None = None,
+    bbox: str | None = None,
+    near: str | None = None,
+    radius: float | None = None,
+    into: str | None = None,
+    lang: str | None = None,
+    cost: str = "free",
+    max_usd: float | None = None,
+) -> list[str]:
+    return [
+        "discover",
+        text,
+        *location_args(area, bbox, near, radius),
+        *_opt("--into", into),
+        *_opt("--lang", lang),
+        *cost_args(cost, max_usd),
+    ]
 
 
 def search_argv(
@@ -255,6 +276,30 @@ def maps_search(
             name_regex=name_regex,
         )
     )
+
+
+@server.tool()
+def maps_discover(
+    text: str,
+    area: str | None = None,
+    bbox: str | None = None,
+    near: str | None = None,
+    radius: float | None = None,
+    into: str | None = None,
+    lang: str | None = None,
+    cost: Cost = "free",
+    max_usd: float | None = None,
+) -> dict[str, Any]:
+    """Find places by meaning, e.g. "quiet bakery known for sourdough". Cost: free while Experimental.
+
+    Uses Google's Maps Experience agent tools and returns a short curated list, not a census. Free
+    while Google keeps the tools Experimental (unconfirmed); unverified against the live service.
+    The location (area, bbox or near+radius) is optional; the text may name the place. into adds the
+    places to an existing run, otherwise a new run is created. Places are ID and name only: follow
+    with maps_details (missing=true), then maps_rank. Keep the Google Maps links with anything you
+    pass on. Needs GOOGLE_MAPS_API_KEY.
+    """
+    return run_cli(discover_argv(text, area, bbox, near, radius, into, lang, cost, max_usd))
 
 
 @server.tool()
@@ -415,9 +460,14 @@ def maps_reviews_search(
     min_rating: float | None = None,
     max_rating: float | None = None,
     by_place: bool = False,
+    mode: Literal["keyword", "semantic", "hybrid"] | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
-    """Search review text with BM25. Cost: free, makes no API call.
+    """Search review text. Cost: free, makes no API call.
 
+    mode: keyword (BM25, default), semantic (by meaning: finds paraphrases and other languages) or
+    hybrid (both fused). Semantic and hybrid run a local model, so review text never leaves this
+    machine; the first use downloads it and needs `uv sync --extra semantic`. model overrides it.
     Only searches reviews already fetched into this run (maps_reviews_fetch); Google returns at most
     5 per place, so absence of a match is weak evidence. min/max_rating filter the review's own stars.
     """
@@ -431,6 +481,8 @@ def maps_reviews_search(
             *_opt("--min-rating", min_rating),
             *_opt("--max-rating", max_rating),
             *(["--by-place"] if by_place else []),
+            *_opt("--mode", mode),
+            *_opt("--model", model),
         ]
     )
 
@@ -449,12 +501,36 @@ def maps_reviews_integrity(
 
 
 @server.tool()
-def maps_reviews_contributors(run_id: str, liked: list[str] | None = None) -> dict[str, Any]:
-    """Reviewers who reviewed several places in the run. Cost: free, makes no API call.
+def maps_reviews_contributors(
+    run_id: str,
+    liked: list[str] | None = None,
+    expand: int | None = None,
+    min_rating: float | None = None,
+    limit: int | None = None,
+    cost: Cost = "free",
+    max_usd: float | None = None,
+) -> dict[str, Any]:
+    """Reviewers who reviewed several places in the run. Cost: free, unless expand is used.
 
     liked: place IDs you like; also lists places endorsed by people who endorsed them.
+    expand: look up N contributors who rated a liked place >= min_rating (default 4.0) and add the
+    places they reviewed (limit reviews each, default 10) to the run. Needs liked and APIFY_TOKEN;
+    billed by Apify per result (cost="free" allows it only inside the monthly credit); unverified
+    against the live actor. It reads individual reviewers' public histories: see docs/permissions.md.
+    max_usd is ignored with cost="free".
     """
-    return run_cli(["reviews", "contributors", run_id, *_repeat("--liked", liked)])
+    return run_cli(
+        [
+            "reviews",
+            "contributors",
+            run_id,
+            *_repeat("--liked", liked),
+            *_opt("--expand", expand),
+            *_opt("--min-rating", min_rating),
+            *_opt("--limit", limit),
+            *cost_args(cost, max_usd),
+        ]
+    )
 
 
 @server.tool()
