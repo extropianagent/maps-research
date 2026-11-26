@@ -540,3 +540,48 @@ def test_quota_refusal_on_page_2_keeps_page_1_like_a_budget_refusal():
     page = p.text_search(Query("x"), bbox=None)
     assert len(page.places) == 20 and page.saturated and page.budget_exhausted
     assert "quota" in page.stopped_early.lower()
+
+
+# -- account protection ---------------------------------------------------------------------
+
+
+def test_suspension_is_a_policy_stop_but_an_invalid_key_is_an_ordinary_error():
+    from maps.providers.base import PolicyStop
+
+    def body(msg):
+        return lambda req: httpx.Response(403, json={"error": {"message": msg}})
+
+    p, _ = make(body("Project has been suspended for abuse"))
+    with pytest.raises(PolicyStop) as e:
+        p.text_search(Query("bakery"), bbox=BBOX)
+    assert e.value.provider == "google" and "suspended" in e.value.detail
+    p, _ = make(body("API key not valid. Please pass a valid API key."))
+    with pytest.raises(ProviderError) as e2:
+        p.text_search(Query("bakery"), bbox=BBOX)
+    assert not isinstance(e2.value, PolicyStop)
+
+
+def test_a_policy_stop_is_not_swallowed_as_a_partial_page():
+    from maps.providers.base import PolicyStop
+
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(200, json={"places": [gplace("a")], "nextPageToken": "t"})
+        return httpx.Response(403, json={"error": {"message": "account suspended"}})
+
+    p, _ = make(handler)
+    with pytest.raises(PolicyStop):
+        p.text_search(Query("bakery"), bbox=BBOX)
+
+
+def test_a_personal_oauth_token_is_refused_before_any_request():
+    from maps import policy
+
+    seen = []
+    p, _ = make(lambda req: seen.append(req) or httpx.Response(200, json={}), api_key="ya29.token")
+    with pytest.raises(policy.PolicyViolation):
+        p.text_search(Query("bakery"), bbox=BBOX)
+    assert seen == []

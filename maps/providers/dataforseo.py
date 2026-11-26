@@ -26,10 +26,11 @@ from typing import Any
 
 import httpx
 
+from .. import policy
 from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
-from .base import ProviderError, SearchPage
+from .base import PolicyStop, ProviderError, SearchPage
 
 BASE_URL = "https://api.dataforseo.com/v3"
 OK = 20000
@@ -86,6 +87,7 @@ class DataForSEOProvider:
     def _call(self, method: str, path: str, body: Any = None) -> dict[str, Any]:
         if not self.available():
             raise ProviderError("dataforseo: DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD not set")
+        policy.check_outbound_payload(self.name, body)
         try:
             resp = self._client.request(
                 method, f"{BASE_URL}{path}", json=body, auth=(self._login, self._password)
@@ -93,6 +95,9 @@ class DataForSEOProvider:
         except httpx.HTTPError as e:
             raise ProviderError(f"dataforseo: request failed ({type(e).__name__})") from None
         if resp.status_code != 200:
+            reason = policy.detect_enforcement(resp.status_code, resp.text[:300])
+            if reason:
+                raise PolicyStop(self.name, f"HTTP {resp.status_code}: {reason}")
             raise ProviderError(f"dataforseo: HTTP {resp.status_code}")
         try:
             data = resp.json()
@@ -107,6 +112,9 @@ class DataForSEOProvider:
         task = data["tasks"][0]
         code = task.get("status_code")
         if code != OK and not (allow_pending and code in (20100, 40601, 40602)):
+            reason = policy.detect_enforcement(200, str(task.get("status_message")))
+            if reason:
+                raise PolicyStop(DataForSEOProvider.name, f"task error {code}: {reason}")
             raise ProviderError(f"dataforseo: task error {code}: {str(task.get('status_message'))[:80]}")
         return task
 

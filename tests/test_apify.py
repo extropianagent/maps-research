@@ -390,3 +390,52 @@ def test_contributor_429_is_quota_exceeded():
     p, _ = make(lambda r: httpx.Response(429, text="slow down"))
     with pytest.raises(QuotaExceeded):
         p.contributor_reviews(CID)
+
+
+# -- account protection ---------------------------------------------------------------------
+
+
+def test_suspension_is_a_policy_stop_but_an_invalid_token_is_an_ordinary_error():
+    from maps.providers.base import PolicyStop
+
+    p, _ = make(lambda req: httpx.Response(403, text='{"error":"account has been suspended"}'))
+    with pytest.raises(PolicyStop) as e:
+        p.text_search(Query("bakery"), bbox=BBOX)
+    assert e.value.provider == "apify"
+    p, _ = make(lambda req: httpx.Response(403, text='{"error":"API key not valid"}'))
+    with pytest.raises(ProviderError) as e2:
+        p.text_search(Query("bakery"), bbox=BBOX)
+    assert not isinstance(e2.value, PolicyStop)
+
+
+def test_cookie_bearing_contributor_template_is_refused_before_any_request(monkeypatch):
+    from maps import policy
+
+    seen = []
+    p, budget = make(lambda req: seen.append(req) or httpx.Response(200, json=[]))
+    monkeypatch.setenv(
+        "MAPS_APIFY_CONTRIBUTOR_INPUT",
+        json.dumps({"startUrls": [{"url": "{contributor_url}"}], "cookies": [{"name": "SID"}]}),
+    )
+    with pytest.raises(policy.PolicyViolation, match="Google credentials"):
+        p.contributor_reviews("1234567890123456789")
+    assert seen == [] and budget.run_units == {}
+
+
+def test_a_session_cookie_value_after_substitution_is_refused(monkeypatch):
+    from maps import policy
+
+    seen = []
+    p, _ = make(lambda req: seen.append(req) or httpx.Response(200, json=[]))
+    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_INPUT", json.dumps({"extra": "SAPISID=abc {contributor_id}"}))
+    with pytest.raises(policy.PolicyViolation):
+        p.contributor_reviews("1234567890123456789")
+    assert seen == []
+
+
+def test_search_payload_with_a_proxy_option_is_refused():
+    from maps import policy
+
+    p, _ = make(lambda req: httpx.Response(200, json=[]))
+    with pytest.raises(policy.PolicyViolation, match="circumvention"):
+        p._run({"searchStringsArray": ["x"], "proxyConfiguration": {"useApifyProxy": True}})

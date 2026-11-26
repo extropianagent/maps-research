@@ -188,3 +188,43 @@ def test_http_error_does_not_leak_credentials():
     with pytest.raises(ProviderError) as e:
         p.text_search(Query("x"), bbox=None)
     assert "401" in str(e.value) and "LOGIN-ABC" not in str(e.value) and "PASS-XYZ" not in str(e.value)
+
+
+# -- account protection ---------------------------------------------------------------------
+
+
+def test_suspension_is_a_policy_stop_but_a_bad_login_is_an_ordinary_error():
+    from maps.providers.base import PolicyStop
+
+    p, _ = make(lambda req: httpx.Response(403, text="account suspended"))
+    with pytest.raises(PolicyStop) as e:
+        p.text_search(Query("bakery"), bbox=BBOX)
+    assert e.value.provider == "dataforseo"
+    p, _ = make(lambda req: httpx.Response(401, text="Authorization failed"))
+    with pytest.raises(ProviderError) as e2:
+        p.text_search(Query("bakery"), bbox=BBOX)
+    assert not isinstance(e2.value, PolicyStop)
+
+
+def test_task_level_enforcement_message_is_a_policy_stop():
+    from maps.providers.base import PolicyStop
+
+    def handler(req):
+        return httpx.Response(
+            200,
+            json={"tasks": [{"status_code": 40200, "status_message": "Account banned for terms violation"}]},
+        )
+
+    p, _ = make(handler)
+    with pytest.raises(PolicyStop):
+        p.text_search(Query("bakery"), bbox=BBOX)
+
+
+def test_outbound_body_with_credentials_is_refused_before_any_request():
+    from maps import policy
+
+    seen = []
+    p, _ = make(lambda req: seen.append(req) or httpx.Response(200, json=serp([])))
+    with pytest.raises(policy.PolicyViolation):
+        p._call("POST", "/x", [{"keyword": "x", "cookie": "SID=1"}])
+    assert seen == []

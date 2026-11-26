@@ -22,7 +22,7 @@ from typing import Any
 from .budget import BudgetExceeded
 from .geography import BBox
 from .models import Place, Query
-from .providers.base import Provider, ProviderError, QuotaExceeded
+from .providers.base import PolicyStop, Provider, ProviderError, QuotaExceeded
 from .store import RunStore
 
 MAX_CONSECUTIVE_ERRORS = 3
@@ -54,6 +54,8 @@ class DiscoveryResult:
     # Cells that were still saturated when the run could go no deeper: known coverage gaps.
     unresolved: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Set when a provider signalled enforcement: the whole run stopped at once (see `discover`).
+    policy_stop: dict[str, str] | None = None
 
     @property
     def complete(self) -> bool:
@@ -119,6 +121,23 @@ def discover(
                 page = provider.text_search(
                     query, bbox=cell, level=level, max_results=depth.max_results, **search_kwargs
                 )
+            except PolicyStop as e:
+                # Enforcement signal: stop everything, every provider, no further requests.
+                result.policy_stop = {"provider": e.provider, "detail": e.detail}
+                result.stopped = f"POLICY STOP: {e.provider}: {e.detail}"
+                result.unresolved.append({**gap, "reason": "not searched"})
+                for p, q, c, lvl in queue:
+                    result.unresolved.append(
+                        {
+                            "provider": p.name,
+                            "query": q.key(),
+                            "cell": c.key(),
+                            "level": lvl,
+                            "reason": "not searched",
+                        }
+                    )
+                queue.clear()
+                break
             except (BudgetExceeded, QuotaExceeded) as e:
                 exhausted[provider.name] = str(e)
                 result.unresolved.append({**gap, "reason": "not searched"})
@@ -157,7 +176,7 @@ def discover(
                 why = "depth does not subdivide" if depth.max_level == 0 else "depth limit reached"
                 result.unresolved.append({**gap, "reason": f"saturated: more places exist here ({why})"})
 
-    if exhausted:
+    if exhausted and result.policy_stop is None:
         result.stopped = "; ".join(f"{name}: {why}" for name, why in exhausted.items())
     return result
 
@@ -173,6 +192,7 @@ def coverage_summary(result: DiscoveryResult) -> dict[str, Any]:
         "searches_resumed": result.tasks_resumed,
         "complete": result.complete,
         "stopped": result.stopped,
+        "policy_stop": result.policy_stop,
         "gaps": gaps,
         "errors": result.errors[:5],
     }

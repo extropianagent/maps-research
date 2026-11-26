@@ -18,9 +18,10 @@ from typing import Any
 
 import httpx
 
+from .. import policy
 from ..budget import Budget, BudgetExceeded
 from ..geography import BBox
-from .base import ProviderError, QuotaExceeded
+from .base import PolicyStop, ProviderError, QuotaExceeded
 
 URL = "https://areainsights.googleapis.com/v1:computeInsights"
 PLACES_LIMIT = 100  # INSIGHT_PLACES returns at most this many IDs per request
@@ -80,6 +81,7 @@ class PlacesAggregate:
         _check_ratings(min_rating, max_rating)
         if not self._key:
             raise ProviderError("google aggregate: GOOGLE_MAPS_API_KEY is not set")
+        policy.check_google_key(self._key)
         flt: dict[str, Any] = {
             "locationFilter": {
                 "customArea": {
@@ -104,19 +106,25 @@ class PlacesAggregate:
             )
         except httpx.HTTPError as e:
             raise ProviderError(f"google aggregate: request failed ({type(e).__name__})") from None
-        if resp.status_code == 429:
-            raise QuotaExceeded(
-                "google aggregate: HTTP 429, the provider's quota was reached; "
-                "`maps search --resume RUN` continues later"
-            )
+        detail = ""
         if not 200 <= resp.status_code < 300:
-            detail = ""
             try:
                 err = resp.json().get("error")
                 if isinstance(err, dict):
                     detail = str(err.get("message") or "")
             except (ValueError, AttributeError):
                 pass
+            reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
+            if reason:
+                raise PolicyStop(
+                    self.name, f"HTTP {resp.status_code}: {detail or reason}".replace(self._key, "***")
+                )
+        if resp.status_code == 429:
+            raise QuotaExceeded(
+                "google aggregate: HTTP 429, the provider's quota was reached; "
+                "`maps search --resume RUN` continues later"
+            )
+        if not 200 <= resp.status_code < 300:
             msg = f"google aggregate: HTTP {resp.status_code}" + (f": {detail}" if detail else "")
             raise ProviderError(msg.replace(self._key, "***"))
         try:
@@ -201,6 +209,8 @@ class PlacesAggregate:
                     res.unresolved.append(cell.key())
                 else:
                     stack.extend((c, level + 1) for c in reversed(cell.split()))
+            except PolicyStop:
+                raise
             except (BudgetExceeded, QuotaExceeded, ProviderError) as e:
                 res.stopped = str(e)
                 res.unresolved.append(cell.key())

@@ -281,3 +281,41 @@ def test_quota_refusal_on_page_2_keeps_page_1_and_stops_the_provider():
     result = discover([_google(handler, budget())], [Query("bakery")], AREA, TWO_PAGES)
     assert len(result.places) == 20 and result.errors == []
     assert "quota" in result.stopped.lower()
+
+
+# -- policy stop ----------------------------------------------------------------------------
+
+
+class StopAfter:
+    def __init__(self, name, stop_on_call=None):
+        self.name, self.budget, self.calls, self.stop_on_call = name, budget(), 0, stop_on_call
+
+    def available(self):
+        return True
+
+    def text_search(self, query, *, bbox, level=0, max_results=60, **kw):
+        from maps.providers.base import PolicyStop, SearchPage
+
+        self.calls += 1
+        if self.calls == self.stop_on_call:
+            raise PolicyStop(self.name, "account suspended")
+        return SearchPage(places=[], saturated=False)
+
+
+def test_a_policy_stop_ends_the_whole_run_for_every_provider():
+    from maps.retrieval import coverage_summary
+
+    a, b = StopAfter("a", stop_on_call=1), StopAfter("b")
+    result = discover([a, b], [Query("x"), Query("y")], AREA, DEPTHS["standard"])
+    assert (a.calls, b.calls) == (1, 0)  # b never ran: nothing more is sent after the stop
+    assert result.policy_stop == {"provider": "a", "detail": "account suspended"}
+    assert result.stopped.startswith("POLICY STOP") and not result.complete
+    assert len(result.unresolved) == 4 and {u["reason"] for u in result.unresolved} == {"not searched"}
+    assert coverage_summary(result)["policy_stop"] == result.policy_stop
+
+
+def test_no_policy_stop_means_a_none_field():
+    from maps.retrieval import coverage_summary
+
+    result = discover([StopAfter("a")], [Query("x")], AREA, DEPTHS["quick"])
+    assert result.policy_stop is None and coverage_summary(result)["policy_stop"] is None

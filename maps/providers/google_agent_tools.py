@@ -49,10 +49,11 @@ from typing import Any
 
 import httpx
 
+from .. import policy
 from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
-from .base import ProviderError, QuotaExceeded, SearchPage
+from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
 
 DEFAULT_ENDPOINT = "https://mapstools.googleapis.com/mcp"
 PROTOCOL_VERSION = "2025-06-18"
@@ -266,6 +267,7 @@ class MapsAgentTools:
         return text.replace(self._key, "***") if self._key else text
 
     def _post(self, payload: dict[str, Any], *, notification: bool = False) -> dict[str, Any] | None:
+        policy.check_google_key(self._key)
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -279,15 +281,19 @@ class MapsAgentTools:
             resp = self._client.post(self._endpoint, json=payload, headers=headers)
         except httpx.HTTPError as e:
             raise ProviderError(f"google_agent_tools: request failed ({type(e).__name__})") from None
-        if resp.status_code == 429:
-            raise QuotaExceeded("google_agent_tools: HTTP 429, the provider's quota was reached")
+        detail = ""
         if not 200 <= resp.status_code < 300:
-            detail = ""
             try:
                 err = resp.json().get("error")
                 detail = str(err.get("message") or "") if isinstance(err, dict) else str(err or "")
             except (ValueError, AttributeError):
                 detail = resp.text[:200]
+            reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
+            if reason:
+                raise PolicyStop(self.name, self._scrub(f"HTTP {resp.status_code}: {detail or reason}"))
+        if resp.status_code == 429:
+            raise QuotaExceeded("google_agent_tools: HTTP 429, the provider's quota was reached")
+        if not 200 <= resp.status_code < 300:
             msg = f"google_agent_tools: HTTP {resp.status_code}" + (f": {detail}" if detail else "")
             raise ProviderError(self._scrub(msg))
         sid = resp.headers.get("mcp-session-id")

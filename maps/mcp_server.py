@@ -29,6 +29,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
     raise ImportError("the MCP server needs the 'mcp' package: run `uv sync --extra mcp`") from exc
 
 MISSING_MCP_MESSAGE = "the MCP server needs the 'mcp' package: run `uv sync --extra mcp`"
+EXIT_POLICY_STOP = 3  # the CLI's exit code when a provider signalled enforcement
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 Depth = Literal["quick", "standard", "deep", "exhaustive"]
@@ -46,8 +47,8 @@ Method:
 4. maps_followups suggests searches; maps_reviews_fetch, then maps_reviews_search (mode="hybrid" = by meaning).
 5. maps_reviews_integrity and maps_reviews_contributors give evidence, never a verdict.
 Use cost="quality" only when the owner authorised spending and gave a ceiling (max_usd).
-Never claim coverage the run did not achieve. A budget-guard stop is a result, not a failure.
-Maps content is temporary: do not store review text, addresses or rating tables.
+Never claim coverage the run did not achieve. A budget-guard stop is a result, not a failure. Maps content is temporary: do not store review text, addresses or rating tables.
+"Account protection:" refusals are final; a `policy_stop` result means stop and tell the owner.
 If you have repo access, follow skills/maps-research/SKILL.md (also resource maps://skill).
 """
 
@@ -61,13 +62,16 @@ def run_cli(argv: list[str]) -> dict[str, Any]:
     """Run `maps <argv>` in-process; return its JSON document or raise ToolError."""
     with _cli_lock:
         result = CliRunner().invoke(cli.main, argv)
-    if result.exit_code != 0:
+    if result.exit_code not in (0, EXIT_POLICY_STOP):
         raise ToolError(_error_line(result))
     try:
         doc = json.loads(result.stdout)
     except ValueError:
         raise ToolError("maps printed output that is not JSON") from None
-    return doc if isinstance(doc, dict) else {"result": doc}
+    doc = doc if isinstance(doc, dict) else {"result": doc}
+    if result.exit_code == EXIT_POLICY_STOP and "policy_stop" not in doc:
+        raise ToolError(_error_line(result))
+    return doc  # a policy stop is a result (its `policy_stop` block says what to do), not a tool error
 
 
 def _error_line(result: Any) -> str:
@@ -143,6 +147,7 @@ def discover_argv(
     lang: str | None = None,
     cost: str = "free",
     max_usd: float | None = None,
+    via: str = "agent_tools",
 ) -> list[str]:
     return [
         "discover",
@@ -150,6 +155,7 @@ def discover_argv(
         *location_args(area, bbox, near, radius),
         *_opt("--into", into),
         *_opt("--lang", lang),
+        *([] if via == "agent_tools" else ["--via", via]),
         *cost_args(cost, max_usd),
     ]
 
@@ -196,6 +202,16 @@ server = MCPServer("maps-research", instructions=INSTRUCTIONS)
 def maps_doctor() -> dict[str, Any]:
     """Show what is configured. Cost: free, makes no API call and prints no secret values."""
     return run_cli(["doctor"])
+
+
+@server.tool()
+def maps_policy_status() -> dict[str, Any]:
+    """Account protection: provider registry, excluded methods, approvals, open stops, AI host. Cost: free.
+
+    Read-only on purpose: approvals and clearing a stop are the owner's decisions, made with the
+    `maps policy` command line, never through this server.
+    """
+    return run_cli(["policy", "status"])
 
 
 @server.tool()
@@ -289,6 +305,7 @@ def maps_discover(
     lang: str | None = None,
     cost: Cost = "free",
     max_usd: float | None = None,
+    via: Literal["agent_tools", "gemini"] = "agent_tools",
 ) -> dict[str, Any]:
     """Find places by meaning, e.g. "quiet bakery known for sourdough". Cost: free while Experimental.
 
@@ -297,9 +314,11 @@ def maps_discover(
     The location (area, bbox or near+radius) is optional; the text may name the place. into adds the
     places to an existing run, otherwise a new run is created. Places are ID and name only: follow
     with maps_details (missing=true), then maps_rank. Keep the Google Maps links with anything you
-    pass on. Needs GOOGLE_MAPS_API_KEY.
+    pass on. via: agent_tools (default, needs GOOGLE_MAPS_API_KEY) or gemini (Gemini grounded with
+    Google Maps, needs GEMINI_API_KEY). Account protection: needs MAPS_AI_HOST naming an AI host whose
+    data settings the owner approved. A result with `policy_stop` means: stop and tell the owner.
     """
-    return run_cli(discover_argv(text, area, bbox, near, radius, into, lang, cost, max_usd))
+    return run_cli(discover_argv(text, area, bbox, near, radius, into, lang, cost, max_usd, via))
 
 
 @server.tool()

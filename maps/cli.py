@@ -3,8 +3,11 @@
 Conventions, for every command:
 - the result is ONE JSON document on stdout (`--format md` prints markdown where offered);
 - progress and warnings go to stderr, so stdout can always be piped into a JSON parser;
-- user errors exit 2 with a one-line message on stderr;
-- stopping early because of the budget is not an error: exit 0, and the JSON says why.
+- user errors exit 2 with a one-line message on stderr; so does an account-protection refusal
+  (the line starts "Account protection:");
+- stopping early because of the budget is not an error: exit 0, and the JSON says why;
+- a provider's enforcement signal (suspension, abuse, terms warning) exits 3, and the JSON carries a
+  top-level `policy_stop` block.
 """
 
 from __future__ import annotations
@@ -24,13 +27,13 @@ from typing import Any
 
 import click
 
-from . import __version__, config, evals, filters, render, retrieval, scoring, store
+from . import __version__, config, evals, filters, policy, render, retrieval, scoring, store
 from .budget import Budget, BudgetExceeded, Ledger, current_month
 from .geography import BBox
 from .models import Hit, Place, Query
 from .pricing import PRICES_CHECKED, SKUS
 from .providers.apify import ApifyProvider, parse_contributor
-from .providers.base import ProviderError, QuotaExceeded
+from .providers.base import PolicyStop, ProviderError, QuotaExceeded
 from .providers.dataforseo import DataForSEOProvider
 from .providers.google_agent_tools import MapsAgentTools
 from .providers.google_aggregate import PlacesAggregate
@@ -69,12 +72,41 @@ class CliError(click.ClickException):
     exit_code = 2
 
 
+STOP_ACTION = (
+    "Stop. Do not retry or work around this. Tell the owner what the provider said. "
+    "The provider stays blocked until the owner clears it with `maps policy clear-stop`."
+)
+
+
+def _stop_block(provider: str, detail: str) -> dict[str, str]:
+    """Record an enforcement signal (the provider is blocked from now on) and describe it for the output."""
+    policy.record_stop(provider, detail)
+    return {"provider": provider, "detail": detail, "action": STOP_ACTION}
+
+
+def _exit_on_stop(
+    doc: dict[str, Any], stop: dict[str, str] | None, show: Callable[[dict[str, Any]], None] | None = None
+) -> None:
+    """Print the document (with the policy_stop block) and exit 3 when a provider signalled enforcement."""
+    if stop is None:
+        return
+    doc["policy_stop"] = _stop_block(stop["provider"], stop["detail"])
+    (show or emit)(doc)
+    raise click.exceptions.Exit(3)
+
+
 class MapsGroup(click.Group):
     """Turns provider and budget failures that escape a command into one-line errors."""
 
     def invoke(self, ctx: click.Context) -> Any:
         try:
             return super().invoke(ctx)
+        except policy.PolicyViolation as e:
+            click.echo(f"Account protection: {e}", err=True)
+            raise click.exceptions.Exit(2) from e
+        except PolicyStop as e:
+            emit({"policy_stop": _stop_block(e.provider, e.detail)})
+            raise click.exceptions.Exit(3) from e
         except ProviderError as e:
             raise click.ClickException(str(e)) from e
         except BudgetExceeded as e:
@@ -367,11 +399,24 @@ def make_budget(cost: Cost) -> Budget:
 
 
 def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BBox | None) -> list[Any]:
-    """Construct providers by name. One function so tests can swap in fakes.
+    """Construct providers by name after the account-protection check. One function so tests can swap in fakes.
 
     The simulator generates its world inside `bbox`, so the same box must be passed again when
     reviews are fetched later.
     """
+    for name in names:
+        policy.require_provider(name)
+    return _construct_providers(names, budget, tier, bbox)
+
+
+def _gated(names: list[str], budget: Budget, tier: str | None, bbox: BBox | None) -> list[Any]:
+    """Every use of a provider goes through here, so the check holds even when tests swap the builder."""
+    for name in names:
+        policy.require_provider(name)
+    return build_providers(names, budget, tier, bbox)
+
+
+def _construct_providers(names: list[str], budget: Budget, tier: str | None, bbox: BBox | None) -> list[Any]:
     out: list[Any] = []
     for name in names:
         if name == "google":
@@ -398,6 +443,15 @@ def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BB
 def build_agent_tools(budget: Budget) -> Any:
     """The Maps Experience agent-tools client. One function so tests can swap in a fake."""
     return MapsAgentTools(budget)
+
+
+def build_discoverer(via: str, budget: Budget) -> Any:
+    """The client behind `maps discover --via`. One function so tests can swap in a fake."""
+    if via == "gemini":
+        from .providers.gemini_maps import GeminiMaps  # lazy: only this path needs the module
+
+        return GeminiMaps(budget)
+    return build_agent_tools(budget)
 
 
 def build_embedder(model: str) -> Any:
@@ -433,7 +487,7 @@ def _usable(providers: list[Any]) -> list[Any]:
 
 
 def _single(name: str, budget: Budget, tier: str | None, bbox: BBox | None) -> Any:
-    return _usable(build_providers([name], budget, tier, bbox))[0]
+    return _usable(_gated([name], budget, tier, bbox))[0]
 
 
 def _area_cache_path() -> Path:
@@ -547,6 +601,9 @@ def _markdown_report(doc: dict[str, Any]) -> str:
             lines.append(f"- Stopped early: {cov['stopped']}")
         if cov.get("gaps"):
             lines.append(f"- Gaps: {cov['gaps']}")
+    if doc.get("policy_stop"):
+        lines.append(f"- POLICY STOP: {doc['policy_stop']['provider']}: {doc['policy_stop']['detail']}")
+        lines.append(f"- {doc['policy_stop']['action']}")
     bud = doc.get("budget")
     if bud:
         lines.append(f"- Spend: ${bud['run_out_of_pocket_usd']:.4f} out of pocket ({bud['mode']} mode)")
@@ -568,7 +625,8 @@ def _output(doc: dict[str, Any], fmt: str) -> None:
 
 @click.group(cls=MapsGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="maps")
-def main() -> None:
+@click.pass_context
+def main(ctx: click.Context) -> None:
     """Google Maps research toolkit, free-first, built for AI agents.
 
     Typical flow: `maps doctor` (what is configured), `maps search -q bakery --area Riyadh`
@@ -585,20 +643,40 @@ def main() -> None:
     allowance; --cost quality --max-usd N authorises paid calls up to N dollars for that command.
 
     State lives in $MAPS_STATE_DIR (default ~/.maps-research); runs older than $MAPS_RETENTION_DAYS
-    (default 30) are deleted at the start of every search, per the Maps Platform terms.
+    (default and maximum 30) are deleted at the start of every search, per the Maps Platform terms.
+
+    Account protection (`maps policy status`): third-party extraction (Apify, DataForSEO) is blocked
+    until the owner approves it, discover needs an approved AI host, and a provider's enforcement
+    signal stops everything (exit 3). A refusal starting "Account protection:" is final: report it.
     """
+    if ctx.invoked_subcommand == "policy":
+        return  # `maps policy status` must keep working to explain a refusal
+    policy.state_dir_check(config.state_dir())
+    if config.retention_clamped():
+        warn(
+            f"MAPS_RETENTION_DAYS is capped at {config.MAX_RETENTION_DAYS:g} days (Maps content expires); using {config.MAX_RETENTION_DAYS:g}"
+        )
+
+
+def _provider_info(p: Any) -> dict[str, Any]:
+    info: dict[str, Any] = {"available": p.available(), "env": ENV_VARS[p.name]}
+    info["class"] = "conditional" if p.name in policy.CONDITIONAL else "core"
+    if p.name in policy.CONDITIONAL:
+        info["approved"] = policy.approved(p.name, "provider") is not None
+    return info
 
 
 @main.command()
 def doctor() -> None:
     """Show what is configured. Free: makes no API call and prints no secret values."""
-    probe = build_providers(list(ENV_VARS), Budget(Ledger(":memory:")), None, None)
+    probe = _construct_providers(list(ENV_VARS), Budget(Ledger(":memory:")), None, None)
     emit(
         {
             "version": __version__,
             "state_dir": str(config.state_dir()),
             "retention_days": config.retention_days(),
-            "providers": {p.name: {"available": p.available(), "env": ENV_VARS[p.name]} for p in probe},
+            "account_protection": policy.status(),
+            "providers": {p.name: _provider_info(p) for p in probe},
             "features": {
                 "semantic": {"installed": _importable("fastembed"), "install": "uv sync --extra semantic"},
                 "mcp": {"installed": _importable("mcp"), "install": "uv sync --extra mcp"},
@@ -745,7 +823,7 @@ def search(
         if set(names) != {"sim"}:
             raise CliError(NO_LOCATION)
         bbox = config.SIM_AREA
-    usable = _usable(build_providers(names, budget, tier, bbox))
+    usable = _usable(_gated(names, budget, tier, bbox))
 
     wanted = {
         "queries": qkeys,
@@ -770,6 +848,7 @@ def search(
     doc = _results_doc(
         run.run_id, run.places(), flt, rk, coverage=coverage, budget=budget.summary(), depth=depth_name
     )
+    _exit_on_stop(doc, result.policy_stop, lambda d: _output(d, fmt))
     _output(doc, fmt)
 
 
@@ -928,13 +1007,31 @@ SOURCE_NOTE = (
 )
 
 
+GEMINI_NOTE = (
+    "Results come from Gemini grounded with Google Maps; keep the Google Maps links with anything you "
+    "pass on, and show the attribution Google provides with grounded output."
+)
+DISCOVER_SOURCES = {"agent_tools": "google_agent_tools", "gemini": "gemini_maps"}
+DISCOVER_KEYS = {"agent_tools": "GOOGLE_MAPS_API_KEY", "gemini": "GEMINI_API_KEY"}
+
+
 @main.command()
 @click.argument("text")
 @location_options
 @click.option("--into", "into_id", metavar="RUN_ID", help="Add the places to this run instead of a new one.")
 @click.option("--lang", "language", metavar="CODE", help="Language of the results, e.g. en or ar.")
+@click.option(
+    "--via",
+    type=click.Choice(["agent_tools", "gemini"]),
+    default="agent_tools",
+    show_default=True,
+    help="agent_tools: Google's Maps Experience agent tools (GOOGLE_MAPS_API_KEY). gemini: Gemini "
+    "grounded with Google Maps (GEMINI_API_KEY).",
+)
 @cost_options
-def discover(text: str, loc: Location, into_id: str | None, language: str | None, cost: Cost) -> None:
+def discover(
+    text: str, loc: Location, into_id: str | None, language: str | None, via: str, cost: Cost
+) -> None:
     """Find places by meaning, e.g. "quiet bakery known for sourdough". Cost: free while Experimental.
 
     Asks Google's Maps Experience agent tools, which understand descriptions rather than keywords,
@@ -944,16 +1041,23 @@ def discover(text: str, loc: Location, into_id: str | None, language: str | None
     --missing`, then `maps rank RUN`. Unverified against the live service. Stops cleanly (exit 0) on
     budget or quota.
     """
+    source = DISCOVER_SOURCES[via]
+    policy.require_provider(source)
+    policy.require_ai_host()  # grounded Maps output goes to the AI host: its data settings must be approved
     budget = make_budget(cost)
     bbox, label = resolve_bbox(loc, budget)
-    tools = build_agent_tools(budget)
+    tools = build_discoverer(via, budget)
     if not tools.available():
-        raise CliError("discover needs GOOGLE_MAPS_API_KEY (see docs/setup.md)")
+        via_flag = " --via gemini" if via == "gemini" else ""
+        raise CliError(f"discover{via_flag} needs {DISCOVER_KEYS[via]} (see docs/setup.md)")
     run = _open_run(into_id) if into_id else None
     stopped = None
     found = None
+    stop = None
     try:
         found = tools.search_places(text, bbox=bbox, language=language)
+    except PolicyStop as e:
+        stop = {"provider": e.provider, "detail": e.detail}
     except (BudgetExceeded, QuotaExceeded) as e:
         stopped = str(e)
     places = list(found.places) if found else []
@@ -967,7 +1071,7 @@ def discover(text: str, loc: Location, into_id: str | None, language: str | None
                 "discover": [text],
                 "bbox": bbox.key() if bbox else None,
                 "depth": None,
-                "providers": ["google_agent_tools"],
+                "providers": [source],
                 "cost": cost.mode,
                 "tier": None,
                 "area": label,
@@ -978,30 +1082,30 @@ def discover(text: str, loc: Location, into_id: str | None, language: str | None
         if text not in spec_discover:
             _touch_spec(run, discover=[*spec_discover, text])
     if run is not None and found is not None:
-        run.record(f"google_agent_tools|{text}|{bbox.key() if bbox else '-'}", places, saturated=False)
+        run.record(f"{source}|{text}|{bbox.key() if bbox else '-'}", places, saturated=False)
     run_id = run.run_id if run else None
-    emit(
-        {
-            "run_id": run_id,
-            "query": text,
-            "found": len(places),
-            "places": [
-                {
-                    "place_id": p.place_id,
-                    "name": p.name,
-                    "maps_url": p.maps_url,
-                    "attribution": attributions.get(p.place_id),
-                    "note": notes.get(p.place_id),
-                }
-                for p in places
-            ],
-            "summary": found.summary if found else "",
-            "source_note": SOURCE_NOTE,
-            "stopped": stopped,
-            "budget": budget.summary(),
-            "next": [f"maps details {run_id} --missing", f"maps rank {run_id}"] if run_id else [],
-        }
-    )
+    doc = {
+        "run_id": run_id,
+        "query": text,
+        "found": len(places),
+        "places": [
+            {
+                "place_id": p.place_id,
+                "name": p.name,
+                "maps_url": p.maps_url,
+                "attribution": attributions.get(p.place_id),
+                "note": notes.get(p.place_id),
+            }
+            for p in places
+        ],
+        "summary": found.summary if found else "",
+        "source_note": GEMINI_NOTE if via == "gemini" else SOURCE_NOTE,
+        "stopped": stopped,
+        "budget": budget.summary(),
+        "next": [f"maps details {run_id} --missing", f"maps rank {run_id}"] if run_id else [],
+    }
+    _exit_on_stop(doc, stop)
+    emit(doc)
 
 
 @main.command()
@@ -1036,10 +1140,13 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
 
     budget = make_budget(cost)
     google = _single("google", budget, tier, None)
-    fetched, stopped, errors = 0, None, []
+    fetched, stopped, errors, stop = 0, None, [], None
     for p in todo:
         try:
             got = google.details(p.place_id, tier=tier)
+        except PolicyStop as e:
+            stop = {"provider": e.provider, "detail": e.detail}
+            break
         except (BudgetExceeded, QuotaExceeded) as e:
             stopped = str(e)
             break
@@ -1052,18 +1159,18 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
         run.record(f"google_details|{p.place_id}|{tier}", [got], saturated=False)
         fetched += 1
         warn(f"[{fetched}/{len(todo)}] details {p.place_id}")
-    emit(
-        {
-            "run_id": run_id,
-            "tier": tier,
-            "fetched": fetched,
-            "remaining": len(todo) - fetched,
-            "stopped": stopped,
-            "errors": errors,
-            "budget": budget.summary(),
-            "next": [f"maps rank {run_id}"],
-        }
-    )
+    doc = {
+        "run_id": run_id,
+        "tier": tier,
+        "fetched": fetched,
+        "remaining": len(todo) - fetched,
+        "stopped": stopped,
+        "errors": errors,
+        "budget": budget.summary(),
+        "next": [f"maps rank {run_id}"],
+    }
+    _exit_on_stop(doc, stop)
+    emit(doc)
 
 
 @main.group("reviews")
@@ -1110,10 +1217,13 @@ def reviews_fetch(
     bbox = BBox.parse(spec["bbox"]) if spec.get("bbox") else None
     prov = _single(provider, budget, spec.get("tier"), bbox)
     done: list[dict[str, Any]] = []
-    stopped, errors = None, []
+    stopped, errors, stop = None, [], None
     for p in todo:
         try:
             got = prov.reviews(p.place_id, limit=limit)
+        except PolicyStop as e:
+            stop = {"provider": e.provider, "detail": e.detail}
+            break
         except (BudgetExceeded, QuotaExceeded) as e:
             stopped = str(e)
             break
@@ -1124,17 +1234,17 @@ def reviews_fetch(
             run.add_reviews(p.place_id, got)
         done.append({"place_id": p.place_id, "name": p.name, "reviews": len(got)})
         warn(f"[{len(done)}/{len(todo)}] {p.name or p.place_id}: {len(got)} reviews")
-    emit(
-        {
-            "run_id": run_id,
-            "provider": provider,
-            "places": done,
-            "stopped": stopped,
-            "errors": errors,
-            "budget": budget.summary(),
-            "next": [f'maps reviews search {run_id} "your phrase"'],
-        }
-    )
+    doc = {
+        "run_id": run_id,
+        "provider": provider,
+        "places": done,
+        "stopped": stopped,
+        "errors": errors,
+        "budget": budget.summary(),
+        "next": [f'maps reviews search {run_id} "your phrase"'],
+    }
+    _exit_on_stop(doc, stop)
+    emit(doc)
 
 
 def _places_with_reviews(run: RunStore) -> dict[str, Place]:
@@ -1374,7 +1484,9 @@ def reviews_contributors(
     if expand and not liked:
         raise CliError("--expand needs at least one --liked PLACE_ID")
     extra: dict[str, Any] = {}
+    stop = None
     if expand:
+        policy.require_provider("apify_contributor")
         budget = make_budget(cost)
         prov = build_contributor_provider(budget)
         if not prov.available():
@@ -1392,6 +1504,9 @@ def reviews_contributors(
                 continue
             try:
                 got = prov.contributor_reviews(cid, limit=limit)
+            except PolicyStop as e:
+                stop = {"provider": e.provider, "detail": e.detail}
+                break
             except (BudgetExceeded, QuotaExceeded) as e:
                 stopped = str(e)
                 break
@@ -1416,7 +1531,74 @@ def reviews_contributors(
     if liked:
         doc["overlap"] = contributor_overlap(places, set(liked), min_rating=min_rating)
     doc.update(extra)
+    _exit_on_stop(doc, stop)
     emit(doc)
+
+
+@main.group("policy")
+def policy_group() -> None:
+    """Account protection: what is permitted, what the owner approved, which providers are stopped."""
+
+
+@policy_group.command("status")
+def policy_status() -> None:
+    """Show the provider registry, excluded methods, approvals, open stops and the AI host. Free."""
+    emit(policy.status())
+
+
+@policy_group.command("approve")
+@click.argument("subject")
+@click.option("--kind", type=click.Choice(["provider", "ai_host"]), required=True)
+@click.option(
+    "--owner-statement", required=True, metavar="TEXT", help="The owner's own words approving this."
+)
+@click.option("--data-rights", metavar="TEXT", help="provider: what its terms let you do with the data.")
+@click.option(
+    "--retrieval-method", metavar="TEXT", help="provider: how the data is retrieved (no Google login)."
+)
+@click.option("--downstream-use", metavar="TEXT", help="provider: what the data is used for afterwards.")
+@click.option("--data-handling", metavar="TEXT", help="ai_host: what its data settings say about training.")
+def policy_approve(
+    subject: str,
+    kind: str,
+    owner_statement: str,
+    data_rights: str | None,
+    retrieval_method: str | None,
+    downstream_use: str | None,
+    data_handling: str | None,
+) -> None:
+    """Record the OWNER's approval of a conditional provider or an AI host. Free.
+
+    This records the owner's decision, not yours: run it only with the owner's own statement from the
+    current conversation, quoted verbatim in --owner-statement. provider needs --data-rights,
+    --retrieval-method and --downstream-use; ai_host needs --data-handling.
+    """
+    details = (
+        {"data_rights": data_rights, "retrieval_method": retrieval_method, "downstream_use": downstream_use}
+        if kind == "provider"
+        else {"data_handling": data_handling}
+    )
+    emit(policy.approve(subject, kind, owner_statement=owner_statement, details=details))
+
+
+@policy_group.command("revoke")
+@click.argument("subject")
+def policy_revoke(subject: str) -> None:
+    """Withdraw every approval of SUBJECT. Free."""
+    emit({"subject": subject, "revoked": policy.revoke(subject)})
+
+
+@policy_group.command("clear-stop")
+@click.argument("provider")
+@click.option("--owner-statement", required=True, metavar="TEXT", help="The owner's own words releasing it.")
+def policy_clear_stop(provider: str, owner_statement: str) -> None:
+    """Release a provider that was stopped by an enforcement signal. Free.
+
+    This records the owner's decision, not yours: run it only with the owner's own statement from the
+    current conversation, quoted verbatim in --owner-statement, after the owner has read what the
+    provider said (`maps policy status`).
+    """
+    emit({"provider": provider, "cleared": policy.clear_stop(provider, owner_statement=owner_statement)})
 
 
 @main.command()

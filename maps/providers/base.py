@@ -26,6 +26,19 @@ class QuotaExceeded(ProviderError):
     """
 
 
+class PolicyStop(ProviderError):
+    """The provider signalled enforcement (suspension, abuse or terms warning), not an ordinary error.
+
+    Never retried or worked around: the whole run stops and the provider stays blocked until the
+    owner clears it (`maps policy clear-stop`).
+    """
+
+    def __init__(self, provider: str, detail: str) -> None:
+        super().__init__(f"{provider}: {detail}")
+        self.provider = provider
+        self.detail = detail
+
+
 @dataclass
 class SearchPage:
     places: list[Place] = field(default_factory=list)

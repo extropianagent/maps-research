@@ -10,7 +10,7 @@ from maps.budget import BudgetExceeded, Ledger
 from maps.config import ledger_path
 from maps.geography import BBox
 from maps.models import Hit, Place, Review
-from maps.providers.base import ProviderError, QuotaExceeded, SearchPage
+from maps.providers.base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
 from maps.providers.google_agent_tools import AgentSearchResult
 from maps.providers.google_aggregate import EnumerationResult
 from maps.semantic import DEFAULT_MODEL, SemanticUnavailable
@@ -87,8 +87,12 @@ def test_doctor_shape_and_no_secret_values(monkeypatch):
         "dataforseo",
         "sim",
     }
-    assert doc["providers"]["google_agent_tools"] == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"]}
-    assert doc["providers"]["google"] == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"]}
+    assert doc["providers"]["google_agent_tools"] == {
+        "available": True,
+        "env": ["GOOGLE_MAPS_API_KEY"],
+        "class": "core",
+    }
+    assert doc["providers"]["google"] == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"], "class": "core"}
     assert doc["providers"]["dataforseo"]["env"] == ["DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"]
     assert doc["providers"]["sim"]["available"] is True
     for v in SECRETS.values():
@@ -754,7 +758,7 @@ class FakeAgentTools:
 
 
 @pytest.fixture
-def agent(monkeypatch):
+def agent(monkeypatch, ai_host):
     fake = FakeAgentTools()
     monkeypatch.setattr(cli, "build_agent_tools", lambda budget: fake)
     return fake
@@ -814,13 +818,13 @@ def test_discover_notes_summary_and_attribution_are_printed_but_never_stored(age
             assert not any(x in f.read_text(encoding="utf-8") for x in secrets)
 
 
-def test_discover_without_a_key_names_the_variable():
+def test_discover_without_a_key_names_the_variable(ai_host):
     result = run_cli("discover", "sourdough", expect=2)
     assert "GOOGLE_MAPS_API_KEY" in result.output
 
 
 @pytest.mark.parametrize("err", [BudgetExceeded("google_agent_tools: refused"), QuotaExceeded("daily cap")])
-def test_discover_stops_cleanly_on_budget_or_quota(monkeypatch, err):
+def test_discover_stops_cleanly_on_budget_or_quota(monkeypatch, ai_host, err):
     monkeypatch.setattr(cli, "build_agent_tools", lambda budget: FakeAgentTools(raises=err))
     doc = jrun("discover", "sourdough")
     assert doc["stopped"] and str(err) in doc["stopped"]
@@ -1001,7 +1005,8 @@ class FakeContributorProvider:
 
 
 @pytest.fixture
-def contributor_run(state):
+def contributor_run(state, approve_provider):
+    approve_provider("apify_contributor")
     run_id = sim_search("--depth", "quick")["run_id"]
     store = RunStore.open(state, run_id)
     l1, l2 = list(store.places())[:2]
@@ -1097,3 +1102,357 @@ def test_expand_needs_liked_and_a_token(contributor_run):
 def test_contributors_help_states_cost():
     out = run_cli("reviews", "contributors", "--help").stdout.lower()
     assert "apify" in out and "unverified" in out and "--expand" in out
+
+
+# --- account protection -----------------------------------------------------------------------
+
+BOX = "24.5,46.5,24.9,46.9"
+APPROVE_ARGS = (
+    "--owner-statement",
+    "I approve apify, I read its terms",
+    "--data-rights",
+    "apify terms allow it",
+    "--retrieval-method",
+    "public pages, no login",
+    "--downstream-use",
+    "personal notes",
+)
+
+
+class FakeSearcher:
+    def __init__(self, name, stop=None):
+        self.name, self.stop, self.calls, self.budget = name, stop, 0, None
+
+    def available(self):
+        return True
+
+    def text_search(self, query, *, bbox, level=0, max_results=60, **kw):
+        self.calls += 1
+        if self.stop:
+            raise self.stop
+        pid = f"ChIJ_{self.name}_{query.text}_{self.calls}_abcdef"
+        return SearchPage(
+            places=[Place(pid, name="X", hits=[Hit(provider=self.name, query=query.text, rank=1)])]
+        )
+
+
+def use_searchers(monkeypatch, *searchers):
+    by_name = {s.name: s for s in searchers}
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [by_name[n] for n in names])
+
+
+def refusal(*args):
+    result = run_cli(*args, expect=2)
+    assert result.stderr.startswith("Account protection:"), result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1
+    return result.stderr
+
+
+def test_apify_is_refused_until_the_owner_approves_it(monkeypatch, policy_dir):
+    monkeypatch.setenv("APIFY_TOKEN", "tok")
+    msg = refusal("search", "-q", "bakery", "--bbox", BOX, "--provider", "apify", "--cost", "quality")
+    assert "maps policy approve apify --kind provider" in msg
+    assert not (policy_dir / "approvals.json").exists()
+    jrun("policy", "approve", "apify", "--kind", "provider", *APPROVE_ARGS)
+    assert json.loads((policy_dir / "approvals.json").read_text())[0]["subject"] == "apify"
+    fake = FakeSearcher("apify")
+    use_searchers(monkeypatch, fake)
+    doc = jrun("search", "-q", "bakery", "--bbox", BOX, "--provider", "apify", "--depth", "quick")
+    assert fake.calls == 1 and doc["coverage"]["places"] == 1
+
+
+def test_dataforseo_is_gated_too(monkeypatch):
+    monkeypatch.setenv("DATAFORSEO_LOGIN", "u")
+    monkeypatch.setenv("DATAFORSEO_PASSWORD", "p")
+    refusal("search", "-q", "x", "--bbox", BOX, "--provider", "dataforseo", "--cost", "quality")
+
+
+def test_reviews_fetch_gates_the_provider(monkeypatch):
+    run = sim_search("--depth", "quick")["run_id"]
+    monkeypatch.setenv("APIFY_TOKEN", "tok")
+    refusal("reviews", "fetch", run, "--provider", "apify")
+
+
+def test_approve_with_a_missing_detail_exits_2(policy_dir):
+    result = run_cli(
+        "policy",
+        "approve",
+        "apify",
+        "--kind",
+        "provider",
+        "--owner-statement",
+        "ok",
+        "--data-rights",
+        "x",
+        "--retrieval-method",
+        "y",
+        expect=2,
+    )
+    assert "downstream_use" in result.stderr and not (policy_dir / "approvals.json").exists()
+    run_cli(
+        "policy", "approve", "apify", "--kind", "provider", "--data-rights", "x", expect=2
+    )  # no statement
+    run_cli("policy", "approve", "google", "--kind", "provider", *APPROVE_ARGS, expect=2)  # not conditional
+
+
+def test_approve_and_clear_stop_help_say_they_record_the_owners_decision():
+    for cmd in ("approve", "clear-stop"):
+        out = " ".join(run_cli("policy", cmd, "--help").stdout.lower().split())
+        assert "owner" in out and "verbatim" in out
+
+
+def test_revoke_removes_an_approval(monkeypatch):
+    jrun("policy", "approve", "apify", "--kind", "provider", *APPROVE_ARGS)
+    jrun("policy", "revoke", "apify")
+    monkeypatch.setenv("APIFY_TOKEN", "tok")
+    refusal("search", "-q", "x", "--bbox", BOX, "--provider", "apify", "--cost", "quality")
+
+
+def test_contributor_expansion_needs_its_own_approval(
+    contributor_run, contributor_provider, approve_provider
+):
+    run_id, l1, _ = contributor_run
+    from maps import policy
+
+    policy.revoke("apify_contributor")
+    approve_provider("apify")  # the other approval does not carry over
+    msg = refusal("reviews", "contributors", run_id, "--liked", l1, "--expand", "1")
+    assert "apify_contributor" in msg and contributor_provider.calls == []
+    approve_provider("apify_contributor")
+    jrun("reviews", "contributors", run_id, "--liked", l1, "--expand", "1")
+    assert len(contributor_provider.calls) == 1
+
+
+def test_a_cookie_bearing_contributor_template_is_refused_before_any_request(
+    contributor_run, approve_provider, monkeypatch
+):
+    import httpx
+
+    run_id, l1, _ = contributor_run
+    approve_provider("apify_contributor")
+    monkeypatch.setenv("APIFY_TOKEN", "tok")
+    monkeypatch.setenv(
+        "MAPS_APIFY_CONTRIBUTOR_INPUT", json.dumps({"cookies": "SID=abc", "u": "{contributor_url}"})
+    )
+    sent = []
+    monkeypatch.setattr(httpx.Client, "post", lambda self, *a, **k: sent.append(a) or None)
+    refusal("reviews", "contributors", run_id, "--liked", l1, "--expand", "1")
+    assert sent == []
+
+
+def test_a_personal_oauth_token_as_the_google_key_is_refused(monkeypatch):
+    import httpx
+
+    sent = []
+    monkeypatch.setattr(httpx.Client, "request", lambda self, *a, **k: sent.append(a) or None)
+    monkeypatch.setattr(httpx.Client, "post", lambda self, *a, **k: sent.append(a) or None)
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "ya29.personal")
+    refusal("census", "--bbox", BOX, "--type", "bakery")
+    refusal("search", "-q", "x", "--bbox", BOX, "--depth", "quick")
+    assert sent == []
+
+
+# discover --------------------------------------------------------------------------------------
+
+
+def test_discover_needs_a_named_ai_host(agent, monkeypatch):
+    monkeypatch.delenv("MAPS_AI_HOST")
+    msg = refusal("discover", "sourdough")
+    assert "MAPS_AI_HOST" in msg and agent.calls == []
+    monkeypatch.setenv("MAPS_AI_HOST", "claude")
+    msg = refusal("discover", "sourdough")
+    assert "maps policy approve claude --kind ai_host" in msg and agent.calls == []
+    jrun(
+        "policy",
+        "approve",
+        "claude",
+        "--kind",
+        "ai_host",
+        "--owner-statement",
+        "ok",
+        "--data-handling",
+        "no training",
+    )
+    assert jrun("discover", "sourdough")["found"] == 2
+
+
+def test_discover_via_gemini_uses_its_own_task_key(monkeypatch, state, ai_host):
+    fake = FakeAgentTools()
+    seen = []
+    monkeypatch.setattr(cli, "build_discoverer", lambda via, budget: seen.append(via) or fake)
+    doc = jrun("discover", "late shawarma", "--via", "gemini", "--bbox", BOX)
+    assert seen == ["gemini"] and fake.calls[0][0] == "late shawarma"
+    run = RunStore.open(state, doc["run_id"])
+    assert run.done(f"gemini_maps|late shawarma|{BBox.parse(BOX).key()}") is not None
+    assert run.spec["providers"] == ["gemini_maps"]
+    doc = jrun("discover", "x", "--via", "gemini")
+    assert RunStore.open(state, doc["run_id"]).done("gemini_maps|x|-") is not None
+
+
+def test_discover_defaults_to_agent_tools(monkeypatch, ai_host):
+    seen = []
+    monkeypatch.setattr(cli, "build_discoverer", lambda via, budget: seen.append(via) or FakeAgentTools())
+    jrun("discover", "x")
+    assert seen == ["agent_tools"]
+
+
+def test_discover_via_gemini_without_a_key_names_the_variable(monkeypatch, ai_host):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    result = run_cli("discover", "x", "--via", "gemini", expect=2)
+    assert "GEMINI_API_KEY" in result.output
+
+
+def test_discover_via_must_be_known(ai_host):
+    run_cli("discover", "x", "--via", "chatgpt", expect=2)
+
+
+# policy stops ------------------------------------------------------------------------------------
+
+
+def test_a_policy_stop_ends_the_search_exits_3_and_blocks_the_provider(
+    monkeypatch, approve_provider, policy_dir
+):
+    approve_provider("apify")
+    apify = FakeSearcher("apify", stop=PolicyStop("apify", "HTTP 403: account suspended"))
+    google = FakeSearcher("google")
+    use_searchers(monkeypatch, apify, google)
+    args = (
+        "search",
+        "-q",
+        "bakery",
+        "-q",
+        "cafe",
+        "--bbox",
+        BOX,
+        "--provider",
+        "apify",
+        "--provider",
+        "google",
+    )
+    result = run_cli(*args, expect=3)
+    doc = json.loads(result.stdout)
+    stop = doc["policy_stop"]
+    assert stop["provider"] == "apify" and "suspended" in stop["detail"]
+    assert stop["action"].startswith("Stop. Do not retry or work around this.")
+    assert "maps policy clear-stop" in stop["action"]
+    assert doc["coverage"]["stopped"].startswith("POLICY STOP")
+    assert (apify.calls, google.calls) == (1, 0)  # nothing was sent after the stop
+    stops = json.loads((policy_dir / "stops.json").read_text())
+    assert stops[0]["provider"] == "apify" and "suspended" in stops[0]["detail"]
+
+    msg = refusal(*args)
+    assert "maps policy clear-stop apify" in msg and apify.calls == 1
+    jrun("policy", "clear-stop", "apify", "--owner-statement", "owner: account is fine again")
+    apify.stop = None
+    doc = jrun(*args)
+    assert "policy_stop" not in doc and apify.calls > 1
+
+
+def test_clear_stop_needs_a_statement_and_an_open_stop():
+    run_cli("policy", "clear-stop", "apify", "--owner-statement", "ok", expect=2)
+    run_cli("policy", "clear-stop", "apify", expect=2)
+
+
+def test_a_policy_stop_in_discover_exits_3(monkeypatch, ai_host, policy_dir):
+    stop = PolicyStop("google_agent_tools", "HTTP 403: suspended")
+    monkeypatch.setattr(cli, "build_agent_tools", lambda budget: FakeAgentTools(raises=stop))
+    doc = json.loads(run_cli("discover", "sourdough", expect=3).stdout)
+    assert doc["policy_stop"]["provider"] == "google_agent_tools" and doc["found"] == 0
+    assert json.loads((policy_dir / "stops.json").read_text())[0]["provider"] == "google_agent_tools"
+
+
+def test_a_policy_stop_in_details_and_reviews_fetch_exits_3(monkeypatch, state, fakes):
+    google, _ = fakes
+    run = RunStore.create(state, {"queries": [], "bbox": BOX, "providers": ["google"], "tier": None})
+    run.record("k", [Place("g1", hits=[Hit(provider="google", query="q", rank=1)])], saturated=False)
+
+    def boom(*a, **k):
+        raise PolicyStop("google", "HTTP 403: suspended")
+
+    google.details = boom
+    doc = json.loads(run_cli("details", run.run_id, "--missing", expect=3).stdout)
+    assert doc["policy_stop"]["provider"] == "google"
+    jrun("policy", "clear-stop", "google", "--owner-statement", "ok")
+    google.reviews = boom
+    doc = json.loads(run_cli("reviews", "fetch", run.run_id, expect=3).stdout)
+    assert doc["policy_stop"]["provider"] == "google"
+
+
+def test_a_policy_stop_in_census_area_enumerate_exits_3(monkeypatch, fakes, policy_dir):
+    google, agg = fakes
+
+    def boom(*a, **k):
+        raise PolicyStop("google_aggregate", "HTTP 451")
+
+    agg.count = boom
+    doc = json.loads(run_cli("census", "--bbox", BOX, "--type", "bakery", expect=3).stdout)
+    assert doc["policy_stop"]["provider"] == "google_aggregate"
+    jrun("policy", "clear-stop", "google_aggregate", "--owner-statement", "ok")
+    agg.enumerate = boom
+    run_cli("enumerate", "--bbox", BOX, "--type", "bakery", expect=3)
+    jrun("policy", "clear-stop", "google_aggregate", "--owner-statement", "ok")
+    google.resolve_area = boom
+    run_cli("area", "Riyadh", expect=3)
+
+
+def test_a_policy_stop_in_contributor_expansion_exits_3(contributor_run, monkeypatch, approve_provider):
+    run_id, l1, _ = contributor_run
+    approve_provider("apify_contributor")
+    fake = FakeContributorProvider(fail={A: PolicyStop("apify", "HTTP 403: banned")})
+    monkeypatch.setattr(cli, "build_contributor_provider", lambda budget: fake)
+    doc = json.loads(
+        run_cli("reviews", "contributors", run_id, "--liked", l1, "--expand", "3", expect=3).stdout
+    )
+    assert doc["policy_stop"]["provider"] == "apify" and len(fake.calls) == 1
+    refusal(
+        "reviews", "contributors", run_id, "--liked", l1, "--expand", "3"
+    )  # apify_contributor shares the stop
+
+
+# retention, state dir, status ---------------------------------------------------------------------
+
+
+def test_retention_is_clamped_with_one_warning(monkeypatch):
+    monkeypatch.setenv("MAPS_RETENTION_DAYS", "90")
+    result = run_cli("search", "-q", "bakery", "--provider", "sim", "--depth", "quick")
+    assert result.stderr.count("capped at 30") == 1
+    assert jrun("doctor")["retention_days"] == 30
+    monkeypatch.setenv("MAPS_RETENTION_DAYS", "7")
+    assert "capped" not in run_cli("runs").stderr
+
+
+def test_a_state_dir_inside_the_repo_is_refused(monkeypatch):
+    repo = cli.config.REPO_ROOT
+    target = repo / "knowledge" / "zz-state-test"
+    monkeypatch.setenv("MAPS_STATE_DIR", str(target))
+    for cmd in (("runs",), ("budget",), ("search", "-q", "x", "--provider", "sim"), ("purge",)):
+        msg = refusal(*cmd)
+        assert "repository" in msg
+    assert not target.exists()
+    monkeypatch.setenv("MAPS_STATE_DIR", str(repo / ".state" / "t"))
+    run_cli("runs")  # allowed: .state is git-ignored
+
+
+def test_policy_status_is_free_and_reports_everything(monkeypatch, approve_provider):
+    approve_provider("apify")
+    monkeypatch.setenv("MAPS_AI_HOST", "claude")
+    doc = jrun("policy", "status")
+    assert doc["registry"]["core"] and doc["approvals"][0]["subject"] == "apify"
+    assert doc["ai_host"] == {"env": "claude", "approved": False}
+    assert doc["retention_cap_days"] == 30 and doc["state_dir"]["ok"] and doc["excluded_methods"]
+
+
+def test_policy_status_still_works_with_a_bad_state_dir(monkeypatch):
+    monkeypatch.setenv("MAPS_STATE_DIR", str(cli.config.REPO_ROOT / "docs"))
+    assert jrun("policy", "status")["state_dir"]["ok"] is False
+
+
+def test_doctor_reports_account_protection_and_provider_classes(approve_provider):
+    approve_provider("apify")
+    doc = jrun("doctor")
+    assert doc["account_protection"]["registry"]["core"]
+    assert doc["providers"]["google"]["class"] == "core" and "approved" not in doc["providers"]["google"]
+    assert (
+        doc["providers"]["apify"]["class"] == "conditional" and doc["providers"]["apify"]["approved"] is True
+    )
+    assert doc["providers"]["dataforseo"]["approved"] is False

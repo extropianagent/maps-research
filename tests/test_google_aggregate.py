@@ -323,3 +323,38 @@ def test_enumerate_stops_cleanly_on_quota_and_keeps_ids():
     res = agg.enumerate(BBOX, types=["cafe"])
     assert res.stopped and "quota" in res.stopped.lower()
     assert res.place_ids and res.unresolved
+
+
+# -- account protection ---------------------------------------------------------------------
+
+
+def test_suspension_is_a_policy_stop_but_an_invalid_key_is_an_ordinary_error():
+    from maps.providers.base import PolicyStop
+
+    def body(msg):
+        return lambda req: httpx.Response(403, json={"error": {"message": msg}})
+
+    p, _ = make(body("This project has been suspended"))
+    with pytest.raises(PolicyStop):
+        p.count(BBOX, types=["bakery"])
+    p, _ = make(body("API key not valid. Please pass a valid API key."))
+    with pytest.raises(ProviderError) as e:
+        p.count(BBOX, types=["bakery"])
+    assert not isinstance(e.value, PolicyStop)
+
+
+def test_enumerate_does_not_swallow_a_policy_stop():
+    from maps.providers.base import PolicyStop
+
+    p, _ = make(lambda req: httpx.Response(403, json={"error": {"message": "banned"}}))
+    with pytest.raises(PolicyStop):
+        p.enumerate(BBOX, types=["bakery"])
+
+
+def test_a_personal_oauth_token_is_refused():
+    from maps import policy
+
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    p = PlacesAggregate(Budget(Ledger(":memory:")), api_key="ya29.x", client=client)
+    with pytest.raises(policy.PolicyViolation):
+        p.count(BBOX, types=["bakery"])

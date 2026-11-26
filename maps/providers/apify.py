@@ -39,10 +39,11 @@ from typing import Any
 
 import httpx
 
+from .. import policy
 from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
-from .base import ProviderError, QuotaExceeded, SearchPage
+from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
 
 ACTOR = "compass~crawler-google-places"
 BASE_URL = "https://api.apify.com/v2"
@@ -121,11 +122,16 @@ class ApifyProvider:
     def _run(self, payload: dict[str, Any], actor: str = ACTOR) -> list[dict[str, Any]]:
         if not self._token:
             raise ProviderError("apify: APIFY_TOKEN is not set")
+        policy.check_outbound_payload(self.name, payload)
         url = f"{BASE_URL}/acts/{actor}/run-sync-get-dataset-items"
         try:
             resp = self._client.post(url, json=payload, headers={"Authorization": f"Bearer {self._token}"})
         except httpx.HTTPError as e:
             raise ProviderError(f"apify: request failed ({type(e).__name__})") from None
+        if not 200 <= resp.status_code < 300:
+            reason = policy.detect_enforcement(resp.status_code, resp.text[:300])
+            if reason:
+                raise PolicyStop(self.name, f"HTTP {resp.status_code}: {reason}")
         if resp.status_code == 429:
             raise QuotaExceeded("apify: HTTP 429 (rate or quota limit)")
         if resp.status_code not in (200, 201):
@@ -248,6 +254,7 @@ class ApifyProvider:
         payload = self._contributor_input(cid, curl, limit)
         if not isinstance(payload, dict):
             raise ProviderError("apify: MAPS_APIFY_CONTRIBUTOR_INPUT must be a JSON object")
+        policy.check_outbound_payload(self.name, payload)
         self.budget.charge("apify.contributor", units=limit)
         places: list[Place] = []
         seen: set[str] = set()

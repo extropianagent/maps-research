@@ -211,7 +211,7 @@ def test_discover_argv_defaults_to_free_and_carries_location():
     assert argv[argv.index("--lang") + 1] == "en" and argv[-2:] == ["--cost", "free"]
 
 
-def test_discover_usage_error_is_a_tool_error():
+def test_discover_usage_error_is_a_tool_error(ai_host):
     is_error, text = call("maps_discover", text="sourdough", bbox="garbage")
     assert is_error and "\n" not in text.strip()
     is_error, text = call("maps_discover", text="sourdough")  # no GOOGLE_MAPS_API_KEY
@@ -248,3 +248,48 @@ def test_contributors_expand_without_liked_is_a_tool_error():
     run_id = sim_search()["run_id"]
     is_error, text = call("maps_reviews_contributors", run_id=run_id, expand=2)
     assert is_error and "--liked" in text
+
+
+# --- account protection ---------------------------------------------------------------------
+
+
+def test_policy_status_is_a_read_only_tool_and_approvals_are_not_exposed():
+    async def fn(client):
+        return {t.name for t in (await client.list_tools()).tools}
+
+    names = with_client(fn)
+    assert "maps_policy_status" in names
+    assert not any(w in n for n in names for w in ("approve", "revoke", "clear_stop"))
+    assert ok("maps_policy_status")["registry"]["core"]
+
+
+def test_discover_via_is_passed_on(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mcp_server, "run_cli", lambda argv: seen.append(argv) or {})
+    mcp_server.maps_discover("x", via="gemini")
+    assert seen[0][seen[0].index("--via") + 1] == "gemini"
+    assert mcp_server.discover_argv("x")[2:4] != ["--via", "gemini"]
+
+
+def test_a_policy_stop_comes_back_as_json_not_a_tool_error(monkeypatch, ai_host):
+    from maps import cli
+    from maps.providers.base import PolicyStop
+
+    class Boom:
+        name = "google_agent_tools"
+
+        def available(self):
+            return True
+
+        def search_places(self, text, *, bbox=None, language=None):
+            raise PolicyStop("google_agent_tools", "HTTP 403: suspended")
+
+    monkeypatch.setattr(cli, "build_agent_tools", lambda budget: Boom())
+    doc = ok("maps_discover", text="sourdough")
+    assert doc["policy_stop"]["provider"] == "google_agent_tools"
+    assert doc["policy_stop"]["action"].startswith("Stop.")
+
+
+def test_a_refusal_is_a_tool_error_starting_with_account_protection():
+    is_error, text = call("maps_discover", text="sourdough")  # no MAPS_AI_HOST
+    assert is_error and "Account protection:" in text and "MAPS_AI_HOST" in text

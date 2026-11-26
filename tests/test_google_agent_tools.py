@@ -655,3 +655,32 @@ def test_page_size_never_sent_unless_asked_and_extended_details_never():
 def test_docstring_states_extended_details_is_never_sent():
     doc = MapsAgentTools.search_places.__doc__ or ""
     assert "includeExtendedDetails" in doc and "never" in doc
+
+
+# -- account protection ---------------------------------------------------------------------
+
+
+def test_suspension_is_a_policy_stop_but_an_invalid_key_is_an_ordinary_error():
+    from maps.providers.base import PolicyStop
+
+    def body(msg):
+        return lambda req: httpx.Response(403, json={"error": {"message": msg}})
+
+    p, _ = make(body("Your account has been suspended"))
+    with pytest.raises(PolicyStop) as e:
+        p.search_places("bakery")
+    assert e.value.provider == "google_agent_tools"
+    p, _ = make(body("API key not valid. Please pass a valid API key."))
+    with pytest.raises(ProviderError) as e2:
+        p.search_places("bakery")
+    assert not isinstance(e2.value, PolicyStop)
+
+
+def test_a_personal_oauth_token_is_refused_before_any_request():
+    from maps import policy
+
+    s = Server()
+    p, _ = make(s, api_key="ya29.token")
+    with pytest.raises(policy.PolicyViolation):
+        p.search_places("bakery")
+    assert s.requests == []
