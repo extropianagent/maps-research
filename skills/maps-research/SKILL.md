@@ -15,8 +15,8 @@ and what it costs. With no API key, `--provider sim` searches a simulated city.
 
 ## 1. Brief
 
-Read `knowledge/preferences.md` and `knowledge/search-lessons.md`, then fix five
-settings from the owner's words:
+Read `knowledge/preferences.md`, `knowledge/feedback-log.md` and
+`knowledge/search-lessons.md`, then fix five settings from the owner's words:
 
 | Setting | How to read the request | Default |
 |---|---|---|
@@ -159,3 +159,5 @@ When a search surprised you, missed something, or a method change clearly
 helped: write a case study (`knowledge/case-studies/README.md`) and add its
 one-line lesson to `knowledge/search-lessons.md`. When the owner states a
 preference, record it in `knowledge/preferences.md` with the date and their words.
+When the owner reports back on a place, add a row to `knowledge/feedback-log.md`
+and follow its rule for proposing preference changes.

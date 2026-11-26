@@ -22,6 +22,14 @@ uv run maps doctor
 
 Required for real searches.
 
+**Fastest start, no billing: a Maps Demo Key.** Open
+<https://mapsplatform.google.com/maps-demo-key>, sign in with a personal Google
+account, accept the Maps Demo Project terms and generate the key. It needs no
+billing account or card. It has a daily limit (reported as 100 calls per API),
+reportedly returns no reviews, and is for trying things out, not for regular
+use. It is enough to confirm the toolkit works against the real service. Use
+the steps below when you want reviews, the Aggregate API or more volume.
+
 1. Create a Google Cloud project at https://console.cloud.google.com and attach a billing account. Billing is required even to use the free monthly allowances.
 2. Enable two APIs: "Places API (New)" and "Places Aggregate API".
 3. Create an API key and restrict it to those two APIs.

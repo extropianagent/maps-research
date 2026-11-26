@@ -26,6 +26,11 @@ Read after the brief in `../SKILL.md`. This adds what is specific to food.
 - Kitchens change. Weigh recent reviews above old ones, and say when the recent
   ones disagree with the rating.
 
+## Occasion
+The same person wants different places for a quick lunch, a family meal, a date
+and a work dinner. Take the occasion from the request, or ask when it changes
+the answer, and say which one the picks are for.
+
 ## Report
 For each pick, name what to order when the reviews support it, and say so when
 they do not.

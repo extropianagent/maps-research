@@ -53,6 +53,12 @@ before running or deploying it.
   listed in `docs/live-verification.md`. When a live call confirms or refutes
   one, update that file and the code together.
 
+## Adding an outside tool
+
+`docs/tools-catalog.md` lists what has been audited and what was decided. Read
+it before proposing a new tool, add a row for anything newly looked at, and
+never install a tool or skill that updates itself from a remote source.
+
 ## After a search worth remembering
 
 Write a case study (`knowledge/case-studies/README.md` has the template) and add

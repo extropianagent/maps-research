@@ -128,6 +128,7 @@ tests/       the test suite (mocked APIs and simulator)
 ## More
 
 - `docs/setup.md`: API key, where to run it, first live run.
+- `docs/tools-catalog.md`: outside tools that were audited, and what was decided about each.
 - `docs/mcp.md`: the MCP server, for using the toolkit from Claude or another client without a shell.
 - `docs/account-protection.md`: the fixed rules that protect your Google account and AI subscriptions, and how the code enforces them.
 - `docs/permissions.md`: what Google's terms allow you to keep and share.
