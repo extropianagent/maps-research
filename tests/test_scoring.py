@@ -135,3 +135,20 @@ def test_hire_treats_unknown_review_count_as_no_evidence():
         s.place.place_id: s for s in rank([Place("r", rating=4.5, review_count=None, hits=[hit()])], "hire")
     }
     assert scored["r"].parts["uncertainty"] == pytest.approx(0.5)
+
+
+def test_ranking_does_not_depend_on_the_order_places_arrive_in():
+    import random
+
+    places = corpus() + [
+        Place("twin_a", name="Twin A", rating=4.4, review_count=400, primary_type="cafe", hits=[hit(0, 5)]),
+        Place("twin_b", name="Twin B", rating=4.4, review_count=400, primary_type="cafe", hits=[hit(0, 5)]),
+        Place("unrated", name="Unrated", hits=[hit(1, 2)]),
+    ]
+    for objective in OBJECTIVES:
+        expected = [s.place.place_id for s in rank(places, objective)]
+        for seed in range(5):
+            shuffled = places[:]
+            random.Random(seed).shuffle(shuffled)
+            assert [s.place.place_id for s in rank(shuffled, objective)] == expected, objective
+        assert [s.place.place_id for s in rank(places[::-1], objective)] == expected, objective

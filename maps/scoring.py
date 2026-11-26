@@ -106,7 +106,8 @@ def _explore(places: list[Place], prior: float) -> list[Scored]:
             pen = 0.3 * picked_types.get(key, 0) if key else 0.0
             return base[p.place_id] - pen, pen
 
-        best = max(remaining, key=lambda p: adjusted(p)[0])  # max keeps the first of equal values
+        # Equal values go to the smaller place ID, so the result never depends on input order.
+        best = min(remaining, key=lambda p: (-adjusted(p)[0], p.place_id))
         value, pen = adjusted(best)
         out.append(Scored(best, value, {"bayes": base[best.place_id], "diversity_penalty": pen}))
         remaining.remove(best)
@@ -120,7 +121,7 @@ def _unrated_last(scored: list[Scored]) -> list[Scored]:
     """Places with no rating cannot be judged: they follow every rated place, widest-found first."""
     rated = [s for s in scored if "unrated" not in s.parts]
     unrated = [s for s in scored if "unrated" in s.parts]
-    unrated.sort(key=lambda s: -visibility(s.place)["n_queries"])
+    unrated.sort(key=lambda s: (-visibility(s.place)["n_queries"], s.place.place_id))
     return rated + unrated
 
 
@@ -138,7 +139,14 @@ def rank(places: list[Place], objective: str, *, top: int | None = None) -> list
         scored = _unrated_last(scored)
     else:
         scored = [_score_one(p, objective, prior) for p in places]
-        # Stable sort; "best" breaks ties toward more reviews.
-        scored.sort(key=lambda s: (-s.score, -(s.place.review_count or 0) if objective == "best" else 0))
+        # "best" breaks ties toward more reviews; any remaining tie goes to the smaller
+        # place ID, so the result never depends on the order places arrived in.
+        scored.sort(
+            key=lambda s: (
+                -s.score,
+                -(s.place.review_count or 0) if objective == "best" else 0,
+                s.place.place_id,
+            )
+        )
         scored = _unrated_last(scored)
     return scored[:top] if top is not None else scored

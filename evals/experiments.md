@@ -3,6 +3,18 @@
 Newest first. One entry per experiment: what changed, what was expected, what
 the benchmark showed, kept or reverted.
 
+## 2026-11-26: ranking no longer depends on input order
+
+- **Change:** places with identical scores are ordered by place ID, in every
+  objective, including the greedy picks of `explore` and the unrated tail.
+- **Why:** a new test shuffled the input and got different orders for tied
+  places. The benchmark protocol relies on the toolkit's ranking being fixed, so
+  that order-and-framing tests measure the AI's judgement, not the tool.
+- **Expected:** identical output for any input order; simulator recall unchanged.
+- **Result:** as expected. `tests/test_scoring.py` covers five shuffles and a
+  reversal for every objective; the recall rows are unchanged.
+- **Decision:** kept.
+
 ## 2026-11-26: partial matching in review search
 
 - **Change:** in `maps reviews search`, a query term of three or more
