@@ -9,14 +9,6 @@ Run: `python -m maps.mcp_server` (stdio) or `python -m maps.mcp_server --http` (
 
 from __future__ import annotations
 
-MISSING_MCP_MESSAGE = "the MCP server needs the 'mcp' package: run `uv sync --extra mcp`"
-
-try:
-    from mcp.server.mcpserver import MCPServer
-    from mcp.server.mcpserver.exceptions import ToolError
-except ImportError as exc:  # pragma: no cover - exercised only without the extra
-    raise ImportError(MISSING_MCP_MESSAGE) from exc
-
 import argparse
 import hmac
 import json
@@ -30,6 +22,13 @@ from click.testing import CliRunner
 
 from maps import cli
 
+try:
+    from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
+except ImportError as exc:  # pragma: no cover - exercised only without the extra
+    raise ImportError("the MCP server needs the 'mcp' package: run `uv sync --extra mcp`") from exc
+
+MISSING_MCP_MESSAGE = "the MCP server needs the 'mcp' package: run `uv sync --extra mcp`"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 Depth = Literal["quick", "standard", "deep", "exhaustive"]

@@ -11,11 +11,30 @@ UNVERIFIED on a live run (check first):
 - output `publishedAtDate`, `reviewerUrl`, `reviewerNumberOfReviews`, `responseFromOwnerText`,
   `originalLanguage`, `reviewerId`, `location.lat/lng`, `categoryName`, `totalScore`, `reviewsCount`.
 - sync endpoint returns HTTP 201 with a JSON list (200 is accepted too).
+
+Contributor-first discovery (`contributor_reviews`): given a reviewer, list the OTHER places they
+reviewed. Google's official APIs cannot do this. Everything below comes from search excerpts of
+2026-11-26 and is UNCONFIRMED (the Apify site was blocked from the build machine):
+- actor `lexis-solutions~google-maps-contributor-reviews-scraper` (the default), input `startUrls`
+  (contributor URLs like https://www.google.com/maps/contrib/<id>/reviews) and `maxItems`.
+- output fields `placeId`, `cid`, `rating`, `reviewCount`, `updatedAt`, `relativeDate`; the names of
+  the contributor's own star rating, review text and place name are NOT confirmed, so parsing tries
+  several candidates (`stars`/`reviewRating`/..., `text`/`reviewText`/..., `title`/`placeName`/...).
+  A bare `rating` is only treated as the review's rating when no place-rating field exists.
+- the actor may return only about the 10 most recent reviews, whatever `limit` is.
+- alternative actor `johnvc~google-maps-contributor-reviews-api` takes a numeric contributor id.
+Configuration: env `MAPS_APIFY_CONTRIBUTOR_ACTOR` (actor id) and `MAPS_APIFY_CONTRIBUTOR_INPUT` (JSON
+input template; `{contributor_id}`, `{contributor_url}` and the token "{limit}" are substituted).
+
+Privacy: this retrieves individual reviewers' public review histories. It is off unless APIFY_TOKEN
+is set, and should be used only on contributors surfaced by the owner's own searches.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Any
 
 import httpx
@@ -23,10 +42,58 @@ import httpx
 from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
-from .base import ProviderError, SearchPage
+from .base import ProviderError, QuotaExceeded, SearchPage
 
 ACTOR = "compass~crawler-google-places"
 BASE_URL = "https://api.apify.com/v2"
+CONTRIBUTOR_ACTOR = "lexis-solutions~google-maps-contributor-reviews-scraper"
+CONTRIBUTOR_SOURCE = "apify_contributor"
+_CONTRIB_URL_RE = re.compile(r"/contrib/(\d{10,})(?!\d)")
+_CONTRIB_ID_RE = re.compile(r"\d{10,}")
+
+_PLACE_ID_KEYS = ("placeId", "place_id", "placeID")
+_NAME_KEYS = ("title", "placeName", "name", "placeTitle")
+_ADDRESS_KEYS = ("address", "placeAddress")
+_PLACE_RATING_KEYS = ("totalScore", "placeRating")
+_REVIEW_RATING_KEYS = ("stars", "reviewRating", "reviewStars", "userRating")
+_REVIEW_COUNT_KEYS = ("reviewCount", "reviewsCount")
+_URL_KEYS = ("url", "placeUrl", "googleMapsUrl")
+_TEXT_KEYS = ("text", "reviewText", "review", "snippet")
+_PUBLISHED_KEYS = ("publishedAtDate", "updatedAt", "date")
+
+
+def parse_contributor(value: str) -> tuple[str, str]:
+    """Normalise a contributor URL or bare numeric id to (id, canonical reviews URL)."""
+    v = (value or "").strip()
+    m = _CONTRIB_URL_RE.search(v) or (_CONTRIB_ID_RE.fullmatch(v) if v.isdigit() else None)
+    if not m:
+        raise ValueError("expected a Google Maps contributor URL or a numeric id of at least 10 digits")
+    cid = m.group(1) if m.re is _CONTRIB_URL_RE else m.group(0)
+    return cid, f"https://www.google.com/maps/contrib/{cid}/reviews"
+
+
+def _first(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for k in keys:
+        v = item.get(k)
+        if v is not None and v != "":
+            return v
+    return None
+
+
+def _substitute(node: Any, cid: str, curl: str, limit: int) -> Any:
+    if isinstance(node, str):
+        if node == "{limit}":
+            return limit
+        return (
+            node.replace("{contributor_id}", cid)
+            .replace("{contributor_url}", curl)
+            .replace("{limit}", str(limit))
+        )
+    if isinstance(node, list):
+        return [_substitute(x, cid, curl, limit) for x in node]
+    if isinstance(node, dict):
+        return {k: _substitute(v, cid, curl, limit) for k, v in node.items()}
+    return node
 
 
 class ApifyProvider:
@@ -51,14 +118,16 @@ class ApifyProvider:
 
     # -- HTTP ---------------------------------------------------------------------------------
 
-    def _run(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _run(self, payload: dict[str, Any], actor: str = ACTOR) -> list[dict[str, Any]]:
         if not self._token:
             raise ProviderError("apify: APIFY_TOKEN is not set")
-        url = f"{BASE_URL}/acts/{ACTOR}/run-sync-get-dataset-items"
+        url = f"{BASE_URL}/acts/{actor}/run-sync-get-dataset-items"
         try:
             resp = self._client.post(url, json=payload, headers={"Authorization": f"Bearer {self._token}"})
         except httpx.HTTPError as e:
             raise ProviderError(f"apify: request failed ({type(e).__name__})") from None
+        if resp.status_code == 429:
+            raise QuotaExceeded("apify: HTTP 429 (rate or quota limit)")
         if resp.status_code not in (200, 201):
             raise ProviderError(f"apify: HTTP {resp.status_code}")
         try:
@@ -157,3 +226,82 @@ class ApifyProvider:
             owner_reply=r.get("responseFromOwnerText"),
             source=self.name,
         )
+
+    # -- Contributor-first discovery (field names unconfirmed, see module docstring) ------------
+
+    def _contributor_input(self, cid: str, curl: str, limit: int) -> Any:
+        raw = os.environ.get("MAPS_APIFY_CONTRIBUTOR_INPUT")
+        if not raw:
+            return {"startUrls": [{"url": curl}], "maxItems": limit}
+        try:
+            template = json.loads(raw)
+        except ValueError:
+            raise ProviderError("apify: MAPS_APIFY_CONTRIBUTOR_INPUT is not valid JSON") from None
+        return _substitute(template, cid, curl, limit)
+
+    def contributor_reviews(self, contributor: str, *, limit: int = 10) -> list[Place]:
+        """Places this contributor reviewed, each carrying their one review (source apify_contributor)."""
+        cid, curl = parse_contributor(contributor)
+        if limit < 1:
+            return []
+        actor = os.environ.get("MAPS_APIFY_CONTRIBUTOR_ACTOR") or CONTRIBUTOR_ACTOR
+        payload = self._contributor_input(cid, curl, limit)
+        if not isinstance(payload, dict):
+            raise ProviderError("apify: MAPS_APIFY_CONTRIBUTOR_INPUT must be a JSON object")
+        self.budget.charge("apify.contributor", units=limit)
+        places: list[Place] = []
+        seen: set[str] = set()
+        for item in self._run(payload, actor):
+            place = self._contributor_place(item, curl)
+            if place is None or place.place_id in seen:
+                continue
+            seen.add(place.place_id)
+            place.hits.append(
+                Hit(provider=CONTRIBUTOR_SOURCE, query=f"contributor:{cid}", rank=len(places) + 1)
+            )
+            places.append(place)
+            if len(places) >= limit:
+                break
+        return places
+
+    @staticmethod
+    def _contributor_place(item: dict[str, Any], curl: str) -> Place | None:
+        pid = _first(item, _PLACE_ID_KEYS)
+        if not isinstance(pid, str) or len(pid) < 10:
+            return None
+        review_rating = _first(item, _REVIEW_RATING_KEYS)
+        place_rating = _first(item, _PLACE_RATING_KEYS)
+        plain = item.get("rating")
+        if review_rating is not None:
+            place_rating = place_rating if place_rating is not None else plain
+        elif place_rating is None:
+            review_rating = plain  # only one rating present: it is the reviewer's
+        name = _first(item, _NAME_KEYS)
+        author = item.get("reviewerName")
+        other_name = _first(item, ("title", "placeName", "placeTitle"))
+        if not author and other_name and isinstance(item.get("name"), str) and item["name"] != other_name:
+            author = item["name"]
+        loc = item.get("location") if isinstance(item.get("location"), dict) else {}
+        place = Place(
+            place_id=pid,
+            name=str(name) if name is not None else "",
+            lat=loc.get("lat", item.get("latitude")),
+            lng=loc.get("lng", item.get("longitude")),
+            rating=place_rating,
+            review_count=_first(item, _REVIEW_COUNT_KEYS),
+            address=_first(item, _ADDRESS_KEYS),
+            maps_url=_first(item, _URL_KEYS),
+        )
+        place.reviews.append(
+            Review(
+                place_id=pid,
+                text=str(_first(item, _TEXT_KEYS) or ""),
+                rating=review_rating,
+                published=_first(item, _PUBLISHED_KEYS),
+                author=author or None,
+                author_id=curl,
+                owner_reply=None,
+                source=CONTRIBUTOR_SOURCE,
+            )
+        )
+        return place

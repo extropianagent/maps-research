@@ -137,7 +137,9 @@ def _first_key(props: dict[str, Any], *candidates: str) -> str | None:
     return next((c for c in candidates if c in props), None)
 
 
-def build_location_bias(prop_schema: dict[str, Any], root: dict[str, Any], bbox: BBox) -> dict[str, Any] | None:
+def build_location_bias(
+    prop_schema: dict[str, Any], root: dict[str, Any], bbox: BBox
+) -> dict[str, Any] | None:
     """Fill a circle or rectangle bias per its sub-schema; None when it is not recognisable."""
     sub = _properties(prop_schema, root)
     circle = sub.get("circle")
@@ -194,7 +196,9 @@ def _normalise_id(v: Any) -> str | None:
 
 
 def _is_google_url(v: Any) -> bool:
-    return isinstance(v, str) and bool(re.match(r"https?://([\w-]+\.)*(google\.[a-z.]+|goo\.gl|g\.co)(/|$)", v))
+    return isinstance(v, str) and bool(
+        re.match(r"https?://([\w-]+\.)*(google\.[a-z.]+|goo\.gl|g\.co)(/|$)", v)
+    )
 
 
 def _walk(node: Any, found: dict[str, _Found]) -> None:

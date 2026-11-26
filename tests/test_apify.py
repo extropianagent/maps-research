@@ -10,8 +10,8 @@ import pytest
 from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.geography import BBox
 from maps.models import Query
-from maps.providers.apify import ApifyProvider
-from maps.providers.base import Provider, ProviderError
+from maps.providers.apify import ApifyProvider, parse_contributor
+from maps.providers.base import Provider, ProviderError, QuotaExceeded
 
 BBOX = BBox(24.0, 46.0, 25.0, 47.0)
 
@@ -160,3 +160,233 @@ def test_free_mode_refuses_beyond_credit_before_http():
     with pytest.raises(BudgetExceeded):
         p.text_search(Query("x"), bbox=BBOX, max_results=5000)  # $20 > $5 credit
     assert calls == []
+
+
+# -- contributor-first discovery ------------------------------------------------------------
+
+CID = "112233445566778899001"
+CURL = f"https://www.google.com/maps/contrib/{CID}/reviews"
+PID_A = "ChIJaaaaaaaaaa"
+PID_B = "ChIJbbbbbbbbbb"
+
+
+@pytest.fixture(autouse=True)
+def _no_contributor_env(monkeypatch):
+    monkeypatch.delenv("MAPS_APIFY_CONTRIBUTOR_ACTOR", raising=False)
+    monkeypatch.delenv("MAPS_APIFY_CONTRIBUTOR_INPUT", raising=False)
+
+
+def citem(pid: str | None, **kw) -> dict:
+    d: dict = {"title": f"P-{pid}", "stars": 4, "totalScore": 4.6, "text": "nice"}
+    if pid:
+        d["placeId"] = pid
+    d.update(kw)
+    return d
+
+
+def capture(items, seen: dict | None = None):
+    seen = seen if seen is not None else {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["url"] = str(req.url)
+        seen["auth"] = req.headers["authorization"]
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(201, json=items)
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"https://www.google.com/maps/contrib/{CID}",
+        f"https://www.google.com/maps/contrib/{CID}/reviews",
+        f"https://www.google.com/maps/contrib/{CID}/reviews?hl=en",
+        f"https://www.google.com/maps/contrib/{CID}?hl=en",
+        f"  {CID}  ",
+    ],
+)
+def test_parse_contributor_accepts(value):
+    assert parse_contributor(value) == (CID, CURL)
+
+
+@pytest.mark.parametrize(
+    "value", ["", "abc", "12345", "123456789", "https://www.google.com/maps/place/x", "x" + CID + "y"]
+)
+def test_parse_contributor_rejects(value):
+    with pytest.raises(ValueError):
+        parse_contributor(value)
+
+
+def test_contributor_default_actor_and_input():
+    seen: dict = {}
+    p, _ = make(capture([citem(PID_A)], seen))
+    p.contributor_reviews(CID, limit=7)
+    assert (
+        "/acts/lexis-solutions~google-maps-contributor-reviews-scraper/run-sync-get-dataset-items"
+        in seen["url"]
+    )
+    assert seen["auth"] == "Bearer tok" and "tok" not in seen["url"]
+    assert seen["body"] == {"startUrls": [{"url": CURL}], "maxItems": 7}
+
+
+def test_contributor_actor_env_override(monkeypatch):
+    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_ACTOR", "johnvc~google-maps-contributor-reviews-api")
+    seen: dict = {}
+    p, _ = make(capture([], seen))
+    p.contributor_reviews(CURL)
+    assert "/acts/johnvc~google-maps-contributor-reviews-api/run-sync" in seen["url"]
+
+
+def test_contributor_input_template_env(monkeypatch):
+    monkeypatch.setenv(
+        "MAPS_APIFY_CONTRIBUTOR_INPUT",
+        json.dumps(
+            {
+                "id": "{contributor_id}",
+                "urls": ["{contributor_url}", {"n": "{limit}"}],
+                "tag": "u-{contributor_id}",
+            }
+        ),
+    )
+    seen: dict = {}
+    p, _ = make(capture([], seen))
+    p.contributor_reviews(CID, limit=4)
+    assert seen["body"] == {"id": CID, "urls": [CURL, {"n": 4}], "tag": f"u-{CID}"}
+
+
+def test_contributor_input_template_invalid_json(monkeypatch):
+    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_INPUT", "{not json")
+    calls: list = []
+    p, budget = make(lambda r: calls.append(r) or httpx.Response(201, json=[]))
+    with pytest.raises(ProviderError, match="MAPS_APIFY_CONTRIBUTOR_INPUT"):
+        p.contributor_reviews(CID)
+    assert calls == [] and budget.run_units == {}
+
+
+def test_contributor_invalid_id_raises_before_charge():
+    p, budget = make(lambda r: httpx.Response(201, json=[]))
+    with pytest.raises(ValueError):
+        p.contributor_reviews("nope")
+    assert budget.run_units == {}
+
+
+def test_contributor_budget_charged_before_request():
+    units_at_request = {}
+
+    def handler(req):
+        units_at_request.update(budget.run_units)
+        return httpx.Response(201, json=[])
+
+    p, budget = make(handler)
+    p.contributor_reviews(CID, limit=12)
+    assert units_at_request == {"apify.contributor": 12}
+
+
+def test_contributor_free_mode_refuses_when_credit_used_up():
+    calls: list = []
+    p, budget = make(lambda r: calls.append(r) or httpx.Response(201, json=[]), mode="free")
+    budget.ledger.add("apify.contributor", 4500, 4.5)  # 90% of the $5 monthly credit
+    with pytest.raises(BudgetExceeded):
+        p.contributor_reviews(CID, limit=10)
+    assert calls == []
+
+
+def test_contributor_mapping_stars_and_total_score():
+    it = citem(
+        PID_A,
+        address="1 Main",
+        reviewsCount=88,
+        url="https://maps/x",
+        location={"lat": 1.5, "lng": 2.5},
+        updatedAt="2025-01-02",
+        reviewerName="Sam",
+        text="lovely",
+        rating=1,  # ambiguous, must not win over totalScore
+    )
+    p, _ = make(capture([it]))
+    (pl,) = p.contributor_reviews(CID)
+    assert (pl.place_id, pl.name, pl.address, pl.rating, pl.review_count) == (
+        PID_A,
+        f"P-{PID_A}",
+        "1 Main",
+        4.6,
+        88,
+    )
+    assert (pl.maps_url, pl.lat, pl.lng) == ("https://maps/x", 1.5, 2.5)
+    (r,) = pl.reviews
+    assert (r.rating, r.text, r.published, r.author, r.author_id, r.source, r.place_id) == (
+        4,
+        "lovely",
+        "2025-01-02",
+        "Sam",
+        CURL,
+        "apify_contributor",
+        PID_A,
+    )
+
+
+def test_contributor_lat_lng_fallback_fields():
+    p, _ = make(capture([citem(PID_A, latitude=3.0, longitude=4.0)]))
+    (pl,) = p.contributor_reviews(CID)
+    assert (pl.lat, pl.lng) == (3.0, 4.0)
+
+
+def test_contributor_rating_is_review_when_no_place_rating_field():
+    it = {"placeId": PID_A, "title": "T", "rating": 5}
+    p, _ = make(capture([it]))
+    (pl,) = p.contributor_reviews(CID)
+    assert pl.reviews[0].rating == 5 and pl.rating is None
+
+
+def test_contributor_rating_is_place_when_review_rating_field_present():
+    it = {"placeId": PID_A, "title": "T", "reviewRating": 2, "rating": 4.3}
+    p, _ = make(capture([it]))
+    (pl,) = p.contributor_reviews(CID)
+    assert pl.reviews[0].rating == 2 and pl.rating == 4.3
+
+
+def test_contributor_rating_not_review_when_total_score_present():
+    it = {"placeId": PID_A, "title": "T", "totalScore": 4.1, "rating": 4.1}
+    p, _ = make(capture([it]))
+    (pl,) = p.contributor_reviews(CID)
+    assert pl.reviews[0].rating is None and pl.rating == 4.1
+
+
+def test_contributor_name_is_author_only_when_clearly_reviewer():
+    same = {"placeId": PID_A, "name": "Cafe", "stars": 3}
+    other = {"placeId": PID_B, "title": "Cafe", "name": "Sam", "stars": 3}
+    p, _ = make(capture([same, other]))
+    a, b = p.contributor_reviews(CID)
+    assert a.name == "Cafe" and a.reviews[0].author is None
+    assert b.name == "Cafe" and b.reviews[0].author == "Sam"
+
+
+def test_contributor_skips_items_without_valid_place_id():
+    items = [citem(None), citem("short"), citem(PID_A), {"place_id": PID_B, "stars": 5}]
+    p, _ = make(capture(items))
+    assert [x.place_id for x in p.contributor_reviews(CID)] == [PID_A, PID_B]
+
+
+def test_contributor_hits_and_limit():
+    items = [citem(f"ChIJ{n:010d}") for n in range(5)]
+    p, _ = make(capture(items))
+    places = p.contributor_reviews(CID, limit=3)
+    assert len(places) == 3
+    for i, pl in enumerate(places, 1):
+        (h,) = pl.hits
+        assert (h.provider, h.query, h.rank) == ("apify_contributor", f"contributor:{CID}", i)
+        assert pl.reviews[0].author_id == CURL
+
+
+def test_contributor_http_error_no_token_leak():
+    p, _ = make(lambda r: httpx.Response(500, text="boom SECRET"), token="SECRET")
+    with pytest.raises(ProviderError) as e:
+        p.contributor_reviews(CID)
+    assert "HTTP 500" in str(e.value) and "SECRET" not in str(e.value)
+
+
+def test_contributor_429_is_quota_exceeded():
+    p, _ = make(lambda r: httpx.Response(429, text="slow down"))
+    with pytest.raises(QuotaExceeded):
+        p.contributor_reviews(CID)

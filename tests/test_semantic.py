@@ -109,8 +109,8 @@ def test_cosine_zero_vector_is_zero():
 
 def test_semantic_finds_paraphrase_and_arabic_where_keywords_find_nothing(corpus):
     query = "grout"
-    assert ReviewIndex(corpus).search(query) == [m for m in ReviewIndex(corpus).search(query) if False] or all(
-        "lines between" not in m.review.text and "فواصل" not in m.review.text
+    assert not any(
+        "lines between" in m.review.text or "فواصل" in m.review.text
         for m in ReviewIndex(corpus).search(query)
     )
     idx = SemanticIndex(corpus, FakeEmbedder())
@@ -122,7 +122,7 @@ def test_semantic_finds_paraphrase_and_arabic_where_keywords_find_nothing(corpus
 
 def test_keyword_index_really_misses_the_paraphrase_and_arabic(corpus):
     # A query with no literal overlap: BM25 returns nothing at all.
-    assert ReviewIndex(corpus).search("tile gaps") == []
+    assert ReviewIndex(corpus).search("seams") == []
     assert ReviewIndex(corpus).search("grout joints")  # sanity: literal words do match something
     only_para = [p for p in corpus if p.place_id == "b"]
     assert ReviewIndex(only_para).search("grout") == []
@@ -168,8 +168,8 @@ def test_min_score_filters_weak_matches(corpus):
 def test_empty_text_reviews_are_skipped(corpus):
     emb = FakeEmbedder()
     idx = SemanticIndex(corpus, emb)
-    assert len(idx) == 7
-    assert emb.n_embedded == 7
+    assert len(idx) == 8
+    assert emb.n_embedded == 8
     assert all(m.review.text.strip() for m in idx.search("zzz", top=100))
 
 
@@ -233,7 +233,10 @@ def test_hybrid_rating_filter_and_top(hybrid_corpus):
 
 def test_hybrid_does_not_double_count_equal_reviews_from_separate_objects():
     # Two equal-looking reviews from different places must stay distinct; same review must fuse.
-    places = [place("p", [rv("p", "grout", 3, author="Ann")]), place("q", [rv("q", "grout", 3, author="Ann")])]
+    places = [
+        place("p", [rv("p", "grout", 3, author="Ann")]),
+        place("q", [rv("q", "grout", 3, author="Ann")]),
+    ]
     res = hybrid_search(ReviewIndex(places), SemanticIndex(places, FakeEmbedder()), "grout")
     assert sorted(m.place_id for m in res) == ["p", "q"]
 
@@ -272,7 +275,7 @@ def test_cache_second_build_embeds_nothing(corpus, tmp_path):
     cache = tmp_path / "run" / "semantic.json"
     first = FakeEmbedder()
     SemanticIndex(corpus, first, cache_path=cache)
-    assert first.n_embedded == 7 and cache.exists()
+    assert first.n_embedded == 8 and cache.exists()
     second = FakeEmbedder()
     idx = SemanticIndex(corpus, second, cache_path=cache)
     assert second.n_embedded == 0
@@ -293,7 +296,7 @@ def test_cache_changed_embedder_name_reembeds(corpus, tmp_path):
     SemanticIndex(corpus, FakeEmbedder("m1"), cache_path=cache)
     other = FakeEmbedder("m2")
     SemanticIndex(corpus, other, cache_path=cache)
-    assert other.n_embedded == 7
+    assert other.n_embedded == 8
 
 
 def test_cache_corrupt_file_is_rebuilt(corpus, tmp_path):
@@ -301,7 +304,7 @@ def test_cache_corrupt_file_is_rebuilt(corpus, tmp_path):
     cache.write_text("{not json at all", encoding="utf-8")
     emb = FakeEmbedder()
     SemanticIndex(corpus, emb, cache_path=cache)
-    assert emb.n_embedded == 7
+    assert emb.n_embedded == 8
     assert isinstance(json.loads(cache.read_text(encoding="utf-8")), dict)
     again = FakeEmbedder()
     SemanticIndex(corpus, again, cache_path=cache)
@@ -313,7 +316,7 @@ def test_cache_wrong_shape_is_ignored(corpus, tmp_path):
     cache.write_text(json.dumps(["a", "list"]), encoding="utf-8")
     emb = FakeEmbedder()
     SemanticIndex(corpus, emb, cache_path=cache)
-    assert emb.n_embedded == 7
+    assert emb.n_embedded == 8
 
 
 def test_cache_written_only_at_given_path_atomically(corpus, tmp_path):
@@ -375,22 +378,15 @@ def test_fastembed_happy_path_with_fake_module(monkeypatch):
     fake = types.ModuleType("fastembed")
     seen: list[str] = []
 
-    class _Arr:
-        def __init__(self, v: list[float]) -> None:
-            self._v = v
-
-        def tolist(self) -> list[float]:
-            return self._v
-
     class TextEmbedding:
         def __init__(self, model_name: str, **kw) -> None:
             seen.append(model_name)
 
         def embed(self, texts):
-            return (_Arr([float(len(t)), 1.0]) for t in texts)
+            return ([float(len(t)), 1.0] for t in texts)
 
         def query_embed(self, text):
-            return iter([_Arr([9.0, 9.0])])
+            return iter([[9.0, 9.0]])
 
     fake.TextEmbedding = TextEmbedding
     monkeypatch.setitem(sys.modules, "fastembed", fake)

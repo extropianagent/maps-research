@@ -111,7 +111,7 @@ def test_free_is_the_default_and_max_usd_is_only_sent_with_quality():
 
 
 def test_usage_error_is_a_tool_error_with_the_cli_message():
-    is_error, text = call("maps_search", queries=["bakery"], providers=["sim"], cost="quality", max_usd=None)
+    is_error, text = call("maps_search", queries=["bakery"], providers=["sim"], bbox="garbage")
     assert is_error and text
     is_error, text = call("maps_rank", run_id="nope")
     assert is_error
@@ -168,7 +168,7 @@ def test_check_bearer():
 
 
 def test_http_app_enforces_bearer_token():
-    app = mcp_server.http_app("s3cret")
+    app = mcp_server.http_app("s3cret", host="0.0.0.0")
     body = {
         "jsonrpc": "2.0",
         "id": 1,
