@@ -62,6 +62,10 @@ token.
 Then in Claude, add a custom connector with the URL `https://YOUR-SERVICE-URL/mcp` and give it the
 bearer token as its credential.
 
+Unconfirmed: whether Claude's custom connector screen accepts a fixed bearer token. If it offers only
+OAuth or no authentication, this server needs an OAuth layer added before it can be used from there;
+the token check works today with any client that can send a header.
+
 ## Caveat: the disk is temporary
 
 A Cloud Run container's disk disappears when the instance stops. Stored runs and the usage ledger
