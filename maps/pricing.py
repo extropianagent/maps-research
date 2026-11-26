@@ -46,6 +46,9 @@ SKUS: dict[str, Sku] = {
         0.0,
         "Maps Experience agent tools search_places (free while Experimental; unconfirmed)",
     ),
+    "google.gemini_maps_grounding": Sku(
+        "google", 0, 0.025, "Gemini API request grounded with Google Maps (price unconfirmed)"
+    ),
     # --- Apify: unit = one scraped place / one scraped review ---
     "apify.place": Sku("apify", 0, 0.004, "Google Maps scraper, per place"),
     "apify.review": Sku("apify", 0, 0.0005, "Google Maps reviews scraper, per review"),
