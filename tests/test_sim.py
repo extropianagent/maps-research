@@ -99,3 +99,12 @@ def test_budget_is_charged_per_search_and_per_reviews_call():
     assert sim.budget.run_units["sim.search"] == 2
     sim.reviews(sim.world[0].place_id)
     assert sim.budget.run_units["sim.reviews"] == 1
+
+
+def test_every_rating_is_a_float_with_one_decimal():
+    from maps.budget import Budget, Ledger
+    from maps.geography import BBox
+    from maps.sim import SimProvider
+
+    world = SimProvider(Budget(Ledger(":memory:")), area=BBox(24.5, 46.5, 24.9, 46.9), n_places=600).world
+    assert all(isinstance(p.rating, float) and p.rating == round(p.rating, 1) for p in world)

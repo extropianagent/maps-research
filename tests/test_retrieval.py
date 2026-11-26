@@ -132,3 +132,9 @@ def test_depth_presets_are_ordered_from_cheap_to_thorough():
     assert list(DEPTHS) == names
     levels = [DEPTHS[n].max_level for n in names]
     assert levels == sorted(levels) and levels[0] == 0
+
+
+def test_a_saturated_quick_search_is_not_reported_as_complete():
+    result = discover([sim()], [Query("bakery")], AREA, DEPTHS["quick"])
+    assert not result.complete
+    assert result.unresolved[0]["reason"].startswith("saturated")

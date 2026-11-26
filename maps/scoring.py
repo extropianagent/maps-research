@@ -42,7 +42,7 @@ def bayesian_rating(
 def visibility(place: Place) -> dict:
     """How findable a place was: hits, distinct queries, best top-level rank, shallowest level."""
     hits = place.hits
-    top = [h.rank for h in hits if h.level == 0]
+    top = [h.rank for h in hits if h.level == 0 and h.rank >= 1]
     return {
         "n_hits": len(hits),
         "n_queries": len({h.query for h in hits}),

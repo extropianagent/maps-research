@@ -140,8 +140,9 @@ def discover(
         if saturated:
             if _splittable(cell, level, depth):
                 queue.extend((provider, query, child, level + 1) for child in cell.split())
-            elif depth.max_level > 0:
-                result.unresolved.append({**gap, "reason": "still saturated at depth limit"})
+            else:
+                why = "depth does not subdivide" if depth.max_level == 0 else "depth limit reached"
+                result.unresolved.append({**gap, "reason": f"saturated: more places exist here ({why})"})
 
     if exhausted:
         result.stopped = "; ".join(f"{name}: {why}" for name, why in exhausted.items())

@@ -140,7 +140,7 @@ class SimProvider:
         _, en, ar, ptype, types = CATEGORIES[cat]
         r = rng.random()
         words = en + ar if r < 0.5 else en if r < 0.75 else ar
-        rating = round(_clamp(rng.gauss(4.2, 0.45), 1, 5), 1)
+        rating = round(float(_clamp(rng.gauss(4.2, 0.45), 1, 5)), 1)
         review_count = int(rng.lognormvariate(3.5, 1.4))
         prominence = math.log1p(review_count) + 0.3 * rating + rng.gauss(0, 0.3)
         manipulated = rng.random() < 0.03

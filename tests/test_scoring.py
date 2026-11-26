@@ -91,3 +91,8 @@ def test_every_documented_objective_is_rankable():
 def test_unknown_objective_is_an_error():
     with pytest.raises(ValueError):
         rank(corpus(), "nope")
+
+
+def test_an_unranked_sighting_does_not_count_as_visible_in_ordinary_search():
+    enumerated = Place("p", hits=[Hit("google_aggregate", "type:bakery", level=0, rank=0)])
+    assert visibility(enumerated)["best_top_rank"] is None
