@@ -109,6 +109,8 @@ five places unless the owner says otherwise), then test it:
    what the owner cares about, and how it fails (for a tiler: "level grout
    finish" and "cracked uneven redo late"). One command per set, each run once:
    `maps reviews search RUN "level grout finish" --by-place`.
+   Leave the subject itself out of both sets ("bread", "tiles"): it appears in
+   every review and makes the failure search match praise.
    Add `--mode hybrid` when `maps doctor` shows `semantic` installed: it also
    matches paraphrases and reviews in the other language.
    That is at most four searches for two languages. No matches means the
