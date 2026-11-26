@@ -1074,14 +1074,15 @@ def reviews_search(
 @click.option(
     "--top",
     type=click.IntRange(min=1),
-    default=10,
-    show_default=True,
-    help="Without --place: check the top N best-ranked places that have reviews.",
+    default=None,
+    help="Without --place: keep only the first N places, most flags first (default: all).",
 )
-def reviews_integrity(run_id: str, place_ids: tuple[str, ...], top: int) -> None:
+def reviews_integrity(run_id: str, place_ids: tuple[str, ...], top: int | None) -> None:
     """Signals that a place's reviews may be manipulated. Cost: free, makes no API call.
 
-    Evidence to weigh (rating shape, bursts, repeated text, one-time reviewers), never a verdict.
+    Without --place, covers every place in the run with at least one fetched review, most flags
+    first then by name; --top N keeps the first N. Evidence to weigh (rating shape, bursts,
+    repeated text, one-time reviewers), never a verdict.
     """
     run = _open_run(run_id)
     with_reviews = _places_with_reviews(run)
@@ -1090,9 +1091,13 @@ def reviews_integrity(run_id: str, place_ids: tuple[str, ...], top: int) -> None
         if missing:
             raise CliError(f"no fetched reviews in this run for: {', '.join(missing)}")
         chosen = [with_reviews[p] for p in place_ids]
+        reports = [{"name": p.name, **integrity_report(p)} for p in chosen]
     else:
-        chosen = [s.place for s in scoring.rank(list(with_reviews.values()), "best", top=top)]
-    emit({"run_id": run_id, "places": [{"name": p.name, **integrity_report(p)} for p in chosen]})
+        reports = [{"name": p.name, **integrity_report(p)} for p in with_reviews.values()]
+        reports.sort(key=lambda r: (-len(r["flags"]), r["name"] or ""))
+        if top is not None:
+            reports = reports[:top]
+    emit({"run_id": run_id, "places_checked": len(reports), "places": reports})
 
 
 @reviews_group.command("contributors")

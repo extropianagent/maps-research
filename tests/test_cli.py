@@ -370,6 +370,44 @@ def test_reviews_round_trip_fetch_search_integrity_contributors():
     assert isinstance(liked["overlap"], list)
 
 
+def _reviewed_run(flag_counts):
+    """A run with one place per entry; entry i gets reviews whose repeated text raises flags."""
+    from maps.models import Review
+
+    run_id = sim_search("--depth", "quick")["run_id"]
+    store = RunStore.open(cli.config.state_dir(), run_id)
+    ids = list(store.places())[: len(flag_counts)]
+    for pid, n_dupes in zip(ids, flag_counts, strict=True):
+        revs = [
+            Review(place_id=pid, text="same copied text here", rating=5.0, author=f"a{i}", author_id=f"u{pid}{i}")
+            for i in range(n_dupes)
+        ]
+        revs.append(Review(place_id=pid, text=f"unique words {pid}", rating=4.0, author="z", author_id=f"z{pid}"))
+        store.add_reviews(pid, revs)
+    return run_id, ids
+
+
+def test_integrity_defaults_to_every_place_with_fetched_reviews():
+    run, ids = _reviewed_run([0, 1, 2, 3, 4, 5])
+    doc = jrun("reviews", "integrity", run)
+    assert doc["places_checked"] == 6
+    assert {p["place_id"] for p in doc["places"]} == set(ids)
+
+
+def test_integrity_top_keeps_the_first_n_of_the_flag_order():
+    run, _ = _reviewed_run([0, 1, 2, 3, 4, 5])
+    doc = jrun("reviews", "integrity", run, "--top", "2")
+    assert doc["places_checked"] == 2 and len(doc["places"]) == 2
+
+
+def test_integrity_orders_by_flag_count_then_name():
+    run, _ = _reviewed_run([0, 6, 0, 6, 0, 6])
+    doc = jrun("reviews", "integrity", run)
+    keys = [(-len(p["flags"]), p["name"]) for p in doc["places"]]
+    assert keys == sorted(keys)
+    assert len(doc["places"][0]["flags"]) > len(doc["places"][-1]["flags"])
+
+
 def test_reviews_search_on_a_run_with_no_reviews_says_so():
     run = sim_search("--depth", "quick")["run_id"]
     out = jrun("reviews", "search", run, "bread")
