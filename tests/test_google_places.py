@@ -274,6 +274,31 @@ def test_budget_refusal_on_page_2_returns_page_1_saturated():
     p, _ = make(paged([{"places": ids("a", 20), "token": "T"}, {"places": ids("b", 20)}], calls), budget=b)
     page = p.text_search(Query("x"), bbox=None)
     assert len(page.places) == 20 and page.saturated and len(calls) == 1
+    assert page.budget_exhausted and page.stopped_early == "nope"
+
+
+def test_http_error_on_page_2_returns_page_1_saturated_and_says_why():
+    def handler(req):
+        if b"pageToken" in req.content:
+            return httpx.Response(500, json={"error": {"message": "backend down"}})
+        return httpx.Response(200, json={"places": ids("a", 20), "nextPageToken": "T"})
+
+    p, budget = make(handler)
+    page = p.text_search(Query("x"), bbox=None)
+    assert len(page.places) == 20 and page.saturated
+    assert not page.budget_exhausted and "HTTP 500" in page.stopped_early
+
+
+def test_http_error_on_page_1_still_raises():
+    p, _ = make(lambda r: httpx.Response(500, text="x"))
+    with pytest.raises(ProviderError):
+        p.text_search(Query("x"), bbox=None)
+
+
+def test_a_complete_search_reports_no_early_stop():
+    p, _ = make(paged([{"places": ids("a", 3)}]))
+    page = p.text_search(Query("x"), bbox=None)
+    assert page.stopped_early is None and not page.budget_exhausted
 
 
 def test_budget_refusal_on_page_1_raises():

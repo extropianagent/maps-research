@@ -168,17 +168,23 @@ class GooglePlaces:
         sku, mask = f"google.text_search.{tier}", search_mask(tier)
         places: list[Place] = []
         token: str | None = None
-        budget_stopped = False
+        stopped_early: str | None = None
+        budget_exhausted = False
         while len(places) < cap:
             body = {**base, "pageSize": min(PAGE_SIZE, cap - len(places))}
             if token:
                 body["pageToken"] = token
             try:
                 data = self._call("POST", SEARCH_URL, sku=sku, mask=mask, json=body)
-            except BudgetExceeded:
+            except BudgetExceeded as e:
                 if not places:
                     raise
-                budget_stopped = True
+                stopped_early, budget_exhausted = str(e), True
+                break
+            except ProviderError as e:
+                if not places:
+                    raise
+                stopped_early = str(e)
                 break
             for raw in data.get("places") or []:
                 if isinstance(raw, dict) and raw.get("id"):
@@ -198,8 +204,12 @@ class GooglePlaces:
             if not token:
                 break
         places = places[:cap]
-        saturated = budget_stopped or (len(places) >= cap and (bool(token) or len(places) == RESULT_CAP))
-        return SearchPage(places=places, saturated=saturated)
+        saturated = stopped_early is not None or (
+            len(places) >= cap and (bool(token) or len(places) == RESULT_CAP)
+        )
+        return SearchPage(
+            places=places, saturated=saturated, stopped_early=stopped_early, budget_exhausted=budget_exhausted
+        )
 
     def details(self, place_id: str, *, tier: str = "enterprise", language: str | None = None) -> Place:
         tier = _check_tier(tier)

@@ -13,6 +13,7 @@ The hard stop is a quota cap set in the provider's own console (docs/setup.md).
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -100,6 +101,10 @@ class Budget:
     ) -> None:
         if mode not in ("free", "quality"):
             raise ValueError("mode must be 'free' or 'quality'")
+        if not (math.isfinite(max_usd) and max_usd >= 0):
+            raise ValueError("max_usd must be a finite number >= 0")
+        if not (0 < reserve <= 1):
+            raise ValueError("reserve must be in (0, 1]")
         if mode == "free" and max_usd:
             raise ValueError("max_usd only applies to quality mode")
         self.ledger = ledger
@@ -109,7 +114,13 @@ class Budget:
         self.run_usd = 0.0  # out-of-pocket spend in this run
         self.run_units: dict[str, float] = {}
 
+    @staticmethod
+    def _check_units(units: float) -> None:
+        if not (math.isfinite(units) and units >= 0):
+            raise ValueError(f"units must be a finite number >= 0, got {units!r}")
+
     def quote(self, sku_name: str, units: float = 1) -> Quote:
+        self._check_units(units)
         sku = SKUS[sku_name]
         used = self.ledger.units(sku_name)
         free = sku.free_units
@@ -121,6 +132,7 @@ class Budget:
 
     def check(self, sku_name: str, units: float = 1) -> Quote:
         """Raise BudgetExceeded if this charge is not allowed; do not record it."""
+        self._check_units(units)
         q = self.quote(sku_name, units)
         sku = q.sku
         if self.mode == "free":
@@ -152,6 +164,7 @@ class Budget:
 
     def charge(self, sku_name: str, units: float = 1) -> Quote:
         """Check, then record. Call immediately before the billable request."""
+        self._check_units(units)
         q = self.check(sku_name, units)
         self.ledger.add(sku_name, units, q.billable_usd)
         self.run_usd += q.out_of_pocket_usd

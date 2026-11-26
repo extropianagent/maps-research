@@ -91,3 +91,23 @@ def test_month_report_lists_every_sku_with_remaining_free_units(ledger):
     row = next(r for r in Budget(ledger).month_report() if r["sku"] == "google.text_search.pro")
     assert row["used"] == 10
     assert row["remaining_free"] == SKUS["google.text_search.pro"].free_units - 10
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0])
+def test_max_usd_must_be_finite_and_non_negative(ledger, bad):
+    with pytest.raises(ValueError):
+        Budget(ledger, mode="quality", max_usd=bad)
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -0.1, 1.5, float("nan")])
+def test_reserve_must_be_in_unit_interval(ledger, bad):
+    with pytest.raises(ValueError):
+        Budget(ledger, reserve=bad)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1])
+@pytest.mark.parametrize("method", ["charge", "check", "quote"])
+def test_units_must_be_finite_and_non_negative(ledger, method, bad):
+    with pytest.raises(ValueError):
+        getattr(Budget(ledger), method)("google.text_search.enterprise", bad)
+    assert ledger.units("google.text_search.enterprise") == 0

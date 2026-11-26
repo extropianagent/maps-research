@@ -236,3 +236,24 @@ def test_budget_stop_on_root():
     agg, _ = make(grid({}), budget=Never(Ledger(":memory:")))
     res = agg.enumerate(BBOX, types=["cafe"])
     assert res.stopped == "no money" and res.unresolved == [BBOX.key()] and res.requests == 0
+
+
+def test_http_error_keeps_ids_so_far_and_reports_unvisited_cells():
+    q = BBOX.split()
+    keys = [c.key() for c in q]
+    counts = {BBOX.key(): 150, **{k: 2 for k in keys}}
+    places = {keys[0]: ["a", "b"], keys[1]: ["c"], keys[2]: ["d"], keys[3]: ["e"]}
+    inner = grid(counts, places)
+    n = {"i": 0}
+
+    def handler(req):
+        n["i"] += 1
+        if n["i"] == 6:
+            return httpx.Response(500, json={"error": {"message": "backend down"}})
+        return inner(req)
+
+    agg, _ = make(handler)
+    res = agg.enumerate(BBOX, types=["cafe"])  # must not raise
+    assert res.place_ids == ["a", "b", "c"]
+    assert res.unresolved == keys[2:]
+    assert res.stopped and "HTTP 500" in res.stopped

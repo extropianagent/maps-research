@@ -50,6 +50,28 @@ def test_a_torn_final_line_from_a_crash_is_ignored(tmp_path):
     reopened = RunStore.open(tmp_path, run.run_id)
     assert reopened.done("k1") is not None
     assert reopened.done("k2") is None
+    reopened.record("k3", [place("p3")], saturated=False)
+    final = RunStore.open(tmp_path, run.run_id)
+    assert final.done("k3") is not None
+    assert set(final.places()) == {"p1", "p3"}
+
+
+def test_record_keeps_copies_so_in_memory_places_match_a_reopened_store(tmp_path):
+    from maps.budget import Budget, Ledger
+    from maps.geography import BBox
+    from maps.models import Query
+    from maps.retrieval import DEPTHS, discover
+    from maps.sim import SimProvider
+
+    area = BBox(24.5, 46.5, 24.9, 46.9)
+    store = RunStore.create(tmp_path, {})
+    prov = SimProvider(Budget(Ledger(":memory:")), area=area, n_places=300, seed=7)
+    res = discover([prov], [Query("bakery"), Query("مخبز", "ar")], area, DEPTHS["standard"], store=store)
+
+    def hits(places):
+        return sum(len(p.hits) for p in places.values())
+
+    assert hits(store.places()) == hits(res.places) == hits(RunStore.open(tmp_path, store.run_id).places())
 
 
 def test_list_runs_is_newest_first(tmp_path):

@@ -128,6 +128,12 @@ def discover(
             consecutive_errors[provider.name] = 0
             result.tasks_run += 1
             places, saturated = page.places, page.saturated
+            if page.stopped_early:
+                result.unresolved.append({**gap, "reason": f"provider stopped early: {page.stopped_early}"})
+                if page.budget_exhausted:
+                    exhausted[provider.name] = page.stopped_early
+                else:
+                    result.errors.append(f"{provider.name} '{query.key()}' @ {cell.key()}: {page.stopped_early}")
             if store:
                 store.record(key, places, saturated=saturated)
             if progress:

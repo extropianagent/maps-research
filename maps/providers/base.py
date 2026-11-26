@@ -25,6 +25,9 @@ class SearchPage:
     # True when the provider hit its own result cap for this query+area, i.e.
     # more matching places probably exist and a smaller area would reveal them.
     saturated: bool = False
+    # Why the provider returned fewer results than it could have (budget refusal, page error).
+    stopped_early: str | None = None
+    budget_exhausted: bool = False
 
 
 @runtime_checkable

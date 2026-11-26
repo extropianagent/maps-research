@@ -44,7 +44,16 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def _append_jsonl(path: Path, obj: dict[str, Any]) -> None:
+    # A crash can leave a torn final line with no newline; start on a fresh line so
+    # the new record is not glued onto it.
+    needs_break = False
+    if path.exists() and path.stat().st_size:
+        with open(path, "rb") as fb:
+            fb.seek(-1, 2)
+            needs_break = fb.read(1) != b"\n"
     with open(path, "a", encoding="utf-8") as f:
+        if needs_break:
+            f.write("\n")
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
@@ -97,7 +106,7 @@ class RunStore:
             self.dir / "tasks.jsonl",
             {"key": key, "saturated": saturated, "places": [p.to_dict() for p in places]},
         )
-        self._load()[key] = TaskRecord(key, saturated, places)
+        self._load()[key] = TaskRecord(key, saturated, [Place.from_dict(p.to_dict()) for p in places])
 
     def add_reviews(self, place_id: str, reviews: list[Review]) -> None:
         _append_jsonl(

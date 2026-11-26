@@ -242,6 +242,8 @@ class Cost:
 
 
 def _build_cost(cost_mode: str, max_usd: float | None) -> Cost:
+    if max_usd is not None and not (math.isfinite(max_usd) and max_usd >= 0):
+        raise CliError("--max-usd must be a finite number >= 0")
     if max_usd is not None and cost_mode != "quality":
         raise CliError("--max-usd only applies with --cost quality")
     return Cost(cost_mode, max_usd)
@@ -557,11 +559,17 @@ def search(
 
     run = _open_run(resume_id) if resume_id else None
     spec = run.spec if run else {}
-    qkeys = list(dict.fromkeys(queries or spec.get("queries") or []))
+    # On resume, new -q/--provider are added to the run's own (original order first).
+    qkeys = list(dict.fromkeys([*(spec.get("queries") or []), *queries]))
     if not qkeys:
         raise CliError("give at least one -q QUERY (or --resume a run that has queries)")
-    names = list(dict.fromkeys(providers)) or spec.get("providers") or ["google"]
+    names = list(dict.fromkeys([*(spec.get("providers") or []), *providers])) or ["google"]
     depth_name = depth or spec.get("depth") or "standard"
+    if run and tier and spec.get("tier") and tier != spec["tier"]:
+        raise CliError(
+            f"--tier {tier} differs from this run's tier {spec['tier']}; "
+            "searches already checkpointed at one tier would be replayed at another. Start a new run."
+        )
     tier = tier or spec.get("tier") or "enterprise"
 
     budget = make_budget(cost)

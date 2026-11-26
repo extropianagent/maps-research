@@ -1,9 +1,11 @@
+import httpx
 import pytest
 
 from maps.budget import Budget, BudgetExceeded, Ledger
 from maps.geography import BBox
 from maps.models import Query
 from maps.providers.base import SearchPage
+from maps.providers.google_places import GooglePlaces
 from maps.retrieval import DEPTHS, Depth, discover
 from maps.sim import SimProvider
 from maps.store import RunStore
@@ -138,3 +140,61 @@ def test_a_saturated_quick_search_is_not_reported_as_complete():
     result = discover([sim()], [Query("bakery")], AREA, DEPTHS["quick"])
     assert not result.complete
     assert result.unresolved[0]["reason"].startswith("saturated")
+
+
+# -- providers that stop early are never reported complete --------------------------------
+
+TWO_PAGES = Depth("onecell", max_level=0, max_results=60, max_tasks=10)
+
+
+def _gplace(pid):
+    return {"id": pid, "displayName": {"text": pid}, "location": {"latitude": 24.6, "longitude": 46.6}}
+
+
+def _google(handler, bud):
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return GooglePlaces(bud, api_key="k", client=client, sleep=lambda s: None)
+
+
+def test_free_allowance_running_out_on_page_2_is_not_complete():
+    class Refuse2(Budget):
+        n = 0
+
+        def charge(self, sku_name, units=1):
+            self.n += 1
+            if self.n > 1:
+                raise BudgetExceeded("free allowance exhausted")
+            return super().charge(sku_name, units)
+
+    def handler(req):
+        return httpx.Response(
+            200, json={"places": [_gplace(f"a{i}") for i in range(20)], "nextPageToken": "T"}
+        )
+
+    g = _google(handler, Refuse2(Ledger(":memory:")))
+    result = discover([g], [Query("bakery")], AREA, TWO_PAGES)
+    assert not result.complete
+    assert "allowance" in result.stopped
+    assert len(result.places) == 20
+    assert any("provider stopped early" in u["reason"] for u in result.unresolved)
+
+
+def test_http_error_on_page_2_keeps_page_1_records_error_and_is_not_charged_again_on_resume(tmp_path):
+    def handler(req):
+        if b"pageToken" in req.content:
+            return httpx.Response(500, text="down")
+        return httpx.Response(200, json={"places": [_gplace(f"a{i}") for i in range(20)], "nextPageToken": "T"})
+
+    bud = budget()
+    store = RunStore.create(tmp_path, {})
+    result = discover([_google(handler, bud)], [Query("bakery")], AREA, TWO_PAGES, store=store)
+    assert len(result.places) == 20
+    assert result.errors and "HTTP 500" in result.errors[0]
+    assert not result.complete
+    assert any("provider stopped early" in u["reason"] for u in result.unresolved)
+    charged = bud.ledger.units("google.text_search.enterprise")
+    assert charged == 2
+
+    again = discover([_google(handler, bud)], [Query("bakery")], AREA, TWO_PAGES, store=RunStore.open(tmp_path, store.run_id))
+    assert again.tasks_resumed == 1 and len(again.places) == 20
+    assert bud.ledger.units("google.text_search.enterprise") == charged

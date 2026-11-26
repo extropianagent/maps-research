@@ -536,3 +536,41 @@ def test_eval_check_scores_a_run_against_expected_ids(state):
     bad = state / "bad.json"
     bad.write_text("{not json")
     run_cli("eval", "check", doc["run_id"], "--expect", str(bad), expect=2)
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-1"])
+def test_max_usd_must_be_finite_and_non_negative(bad):
+    r = run_cli("search", "-q", "x", "--provider", "sim", "--cost", "quality", "--max-usd", bad, expect=2)
+    assert "--max-usd" in r.stderr
+
+
+def test_resume_with_a_different_tier_is_refused_and_defaults_to_the_runs_tier():
+    first = sim_search("--tier", "pro", "--depth", "quick")
+    run_cli("search", "--resume", first["run_id"], "--tier", "ids", expect=2)
+    assert jrun("search", "--resume", first["run_id"], "--tier", "pro")["run_id"] == first["run_id"]
+    assert RunStore.open(ledger_path().parent, first["run_id"]).spec["tier"] == "pro"
+    assert jrun("search", "--resume", first["run_id"])["coverage"]["searches_run"] == 0
+
+
+def test_resume_adds_queries_and_describes_the_whole_run():
+    first = sim_search("--depth", "quick", q=("bakery",))
+    rid = first["run_id"]
+    second = jrun("search", "--resume", rid, "-q", "مخبز:ar")
+    listed = {r["run_id"]: r for r in jrun("runs")["runs"]}[rid]
+    assert listed["queries"] == ["bakery", "مخبز:ar"]
+    assert second["coverage"]["places"] == listed["places"] > first["coverage"]["places"]
+    assert second["coverage"]["searches_resumed"] > 0
+    third = jrun("search", "--resume", rid)
+    assert third["coverage"]["searches_run"] == 0 and third["coverage"]["places"] == listed["places"]
+    assert jrun("followups", rid)["queries"] == ["bakery", "مخبز:ar"]
+    # repeating an existing query does not duplicate it
+    jrun("search", "--resume", rid, "-q", "bakery")
+    assert {r["run_id"]: r for r in jrun("runs")["runs"]}[rid]["queries"] == ["bakery", "مخبز:ar"]
+
+
+def test_resume_updates_depth_and_adds_providers():
+    first = sim_search("--depth", "quick")
+    jrun("search", "--resume", first["run_id"], "--depth", "standard")
+    assert {r["run_id"]: r for r in jrun("runs")["runs"]}[first["run_id"]]["depth"] == "standard"
+    spec = RunStore.open(ledger_path().parent, first["run_id"]).spec
+    assert spec["providers"] == ["sim"]

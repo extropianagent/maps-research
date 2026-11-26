@@ -153,7 +153,7 @@ class PlacesAggregate:
     ) -> EnumerationResult:
         """Quadtree walk: count a cell, list it if it fits under the limit, otherwise split it.
 
-        Stops cleanly on BudgetExceeded and reports the cells it did not get to.
+        Stops cleanly on BudgetExceeded or a ProviderError (HTTP failure) and reports the cells it did not get to.
         """
         kw: dict[str, Any] = dict(
             types=types, min_rating=min_rating, max_rating=max_rating, operational_only=operational_only
@@ -181,7 +181,7 @@ class PlacesAggregate:
                     res.unresolved.append(cell.key())
                 else:
                     stack.extend((c, level + 1) for c in reversed(cell.split()))
-            except BudgetExceeded as e:
+            except (BudgetExceeded, ProviderError) as e:
                 res.stopped = str(e)
                 res.unresolved.append(cell.key())
                 res.unresolved.extend(c.key() for c, _ in reversed(stack))
