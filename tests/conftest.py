@@ -42,9 +42,11 @@ def ai_host(monkeypatch):
 def _spend_details(billing, **kw):
     from datetime import date
 
+    cap = {"daily_request_cap": kw["daily_request_cap"]} if "daily_request_cap" in kw else {}
     if billing == "none":
-        return {"billing": "none"}
+        return {"billing": "none", **cap}
     return {
+        **cap,
         "billing": "enabled",
         "per_search_cap_usd": kw.get("per_search_cap_usd", 1000.0),
         "period_cap_usd": kw.get("period_cap_usd", 100000.0),
@@ -94,9 +96,12 @@ def spending_enabled(grant_spend):
 
 @pytest.fixture
 def spending_none(grant_spend):
-    """Every credential declared as one that cannot be charged."""
-    for subject in ("google", "gemini", "apify", "dataforseo"):
+    """Google, Gemini and Apify declared as credentials that cannot be charged (free-mode rules still
+    apply). DataForSEO has no free allowance, so under `none` every request would be out of pocket and
+    refused: it is enabled with generous caps, for quality-mode budgets."""
+    for subject in ("google", "gemini", "apify"):
         grant_spend(subject, "none")
+    grant_spend("dataforseo", "enabled")
 
 
 @pytest.fixture

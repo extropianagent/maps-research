@@ -51,8 +51,8 @@ def test_the_ledger_lives_in_the_policy_folder(policy_dir):
 def test_the_store_holds_counters_only(spending_enabled, usage):
     file_budget().charge("google.text_search.pro", 2, fingerprint="a")
     doc = json.loads(usage.read_text())
-    assert set(doc) == {"months", "reconciliations"}
-    assert doc["months"][current_month()] == {"google.text_search.pro": {"units": 2, "usd": 0.0}}
+    assert set(doc) == {"initialized_on", "months", "reconciliations", "days", "leases"}
+    assert doc["months"][current_month()] == {"google.text_search.pro": {"units": 2, "usd": 0}}
     assert doc["reconciliations"] == []
     assert not list(usage.parent.glob("*.tmp"))  # atomic replace leaves no temp file behind
     assert (usage.parent / "usage.json.lock").exists()
@@ -80,19 +80,17 @@ def test_an_unparsable_store_blocks_every_chargeable_request(spending_enabled, u
         "[]",
         '{"months": []}',
         '{"months": {"2026-11": {"google.aggregate": {"units": "x", "usd": 0}}}}',
-        '{"months": {}}',
+        '{"months": {}}',  # no 'initialized_on': a store that is not initialised is not zero usage
     ],
 )
 def test_a_malformed_store_blocks(spending_enabled, usage, content):
     usage.write_text(content)
-    if content == '{"months": {}}':  # missing "reconciliations" is tolerated as empty
-        file_budget().charge("google.aggregate")
-        return
     with pytest.raises(BudgetExceeded, match="usage.json"):
         file_budget().charge("google.aggregate")
 
 
 def test_a_store_that_cannot_be_used_blocks(spending_enabled, usage):
+    usage.unlink()
     usage.mkdir()  # a directory where the file should be
     with pytest.raises(BudgetExceeded, match="usage.json"):
         file_budget().charge("google.aggregate")
@@ -215,18 +213,18 @@ def test_sim_needs_no_record_at_all():
 
 def test_billing_none_allows_a_price_unknown_sku_and_never_counts_as_out_of_pocket(grant_spend):
     grant_spend("google", "none")
-    b = Budget(Ledger(":memory:"), mode="quality", max_usd=0)
+    b = Budget(Ledger(":memory:"))
     q = b.charge("google.agent_tools.search", fingerprint="a")
     assert q.out_of_pocket_usd == 0 and b.run_usd == 0
     assert b.ledger.units("google.agent_tools.search") == 1  # units are still counted
 
 
-def test_billing_none_allows_a_sku_with_no_free_allowance_in_free_mode(grant_spend):
-    grant_spend("dataforseo", "none")
+def test_billing_none_allows_a_sku_with_no_free_allowance_inside_the_providers_credit(grant_spend):
+    grant_spend("apify", "none")
     b = Budget(Ledger(":memory:"))
     for i in range(50):
-        b.charge("dataforseo.maps_search", fingerprint=str(i))
-    assert b.run_usd == 0 and b.ledger.units("dataforseo.maps_search") == 50
+        b.charge("apify.place", fingerprint=str(i))  # $0.20 of the $5 monthly credit
+    assert b.run_usd == 0 and b.ledger.units("apify.place") == 50
 
 
 def test_billing_none_still_obeys_every_ceiling(grant_spend):

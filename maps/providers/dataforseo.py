@@ -71,6 +71,7 @@ class DataForSEOProvider:
         poll_timeout: float = 120.0,
         poll_interval: float = 5.0,
         sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.budget = budget
         self._login = login if login is not None else os.environ.get("DATAFORSEO_LOGIN", "")
@@ -79,6 +80,7 @@ class DataForSEOProvider:
         self.poll_timeout = poll_timeout
         self.poll_interval = poll_interval
         self._sleep = sleep
+        self._clock = clock
 
     def available(self) -> bool:
         return bool(self._login and self._password)
@@ -206,20 +208,33 @@ class DataForSEOProvider:
         task_id = post.get("id")
         if not task_id:
             raise ProviderError("dataforseo: task_post returned no task id")
-        waited = 0.0
+        # Bounded by wall-clock time: the smaller of this provider's timeout and what the budget has left.
+        allowed_s = min(self.poll_timeout, self.budget.remaining_elapsed_s())
+        start = self._clock()
+        path = f"/business_data/google/reviews/task_get/{task_id}"
+        attempt = 0
         while True:
-            task = self._task(
-                self._call("GET", f"/business_data/google/reviews/task_get/{task_id}"), allow_pending=True
+            attempt += 1
+            # every poll is an HTTP request: charged (zero price); identical by nature, so the attempt
+            # number is part of its fingerprint
+            self.budget.charge(
+                "dataforseo.poll",
+                fingerprint=Budget.fingerprint("GET", f"{BASE_URL}{path}", {"attempt": attempt}),
             )
+            task = self._task(self._call("GET", path), allow_pending=True)
             if task.get("status_code") == OK and task.get("result"):
                 break
-            if waited >= self.poll_timeout:
+            if self._clock() - start >= allowed_s:
                 raise ProviderError(
                     f"dataforseo: reviews task {task_id} not ready before timeout "
                     "(already paid for; fetch it later with that task id)"
                 )
             self._sleep(self.poll_interval)
-            waited += self.poll_interval
+            if self._clock() - start >= allowed_s:
+                raise ProviderError(
+                    f"dataforseo: reviews task {task_id} not ready before timeout "
+                    "(already paid for; fetch it later with that task id)"
+                )
         items = task["result"][0].get("items") or []
         out: list[Review] = []
         for r in items:

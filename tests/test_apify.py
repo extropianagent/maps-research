@@ -38,7 +38,8 @@ def item(pid: str | None, lat: float = 24.5, lng: float = 46.5, **kw) -> dict:
     return d
 
 
-def make(handler, mode="quality", **kw):
+def make(handler, mode="free", **kw):
+    # apify is recorded as billing none (spending_none): free-mode rules, inside the $5 monthly credit
     budget = Budget(Ledger(":memory:"), mode=mode, max_usd=5 if mode == "quality" else 0)
     client = httpx.Client(transport=httpx.MockTransport(handler))
     return ApifyProvider(budget, token=kw.pop("token", "tok"), client=client), budget

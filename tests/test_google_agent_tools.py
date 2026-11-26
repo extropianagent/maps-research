@@ -199,7 +199,7 @@ def test_no_usable_property_lists_properties_and_does_not_charge():
     p, budget = make(s)
     with pytest.raises(ProviderError, match=r"\['a', 'b'\]"):
         p.search_places("x")
-    assert s.calls() == [] and budget.run_units == {}
+    assert s.calls() == [] and "google.agent_tools.search" not in budget.run_units
 
 
 def test_language_and_circle_bias_filled_from_schema():
@@ -272,7 +272,8 @@ def test_schema_cached_and_session_reused_across_searches():
     p.search_places("b")
     assert s.methods().count("tools/list") == 1 and s.methods().count("initialize") == 1
     assert s.methods().count("tools/call") == 2
-    assert budget.run_units == {"google.agent_tools.search": 2}
+    # the handshake happens once (3 setup requests, charged at zero price); each search is charged once
+    assert budget.run_units == {"google.agent_tools.search": 2, "google.agent_tools.setup": 3}
 
 
 # -- response framing -----------------------------------------------------------------------
@@ -448,7 +449,7 @@ def test_hits_rank_cell_language_level():
 # -- budget ---------------------------------------------------------------------------------
 
 
-def test_charged_once_per_search_not_for_handshake():
+def test_charged_once_per_search_and_every_handshake_request_is_charged_before_it_is_sent():
     charges: list[tuple[str, list[str]]] = []
     s = Server(call_result=structured({"id": PID1}))
 
@@ -460,7 +461,10 @@ def test_charged_once_per_search_not_for_handshake():
     p, _ = make(s, budget=Spy(Ledger(":memory:")))
     p.search_places("x")
     assert charges == [
-        ("google.agent_tools.search", ["initialize", "notifications/initialized", "tools/list"])
+        ("google.agent_tools.setup", []),  # initialize
+        ("google.agent_tools.setup", ["initialize"]),  # notifications/initialized
+        ("google.agent_tools.setup", ["initialize", "notifications/initialized"]),  # tools/list
+        ("google.agent_tools.search", ["initialize", "notifications/initialized", "tools/list"]),
     ]
 
 
@@ -557,7 +561,7 @@ def test_text_search_adapter_is_unsaturated_and_capped():
     page = p.text_search(Query("bakery", "ar"), bbox=BBOX, level=1, max_results=3, tier="ignored")
     assert isinstance(page, SearchPage) and not page.saturated and len(page.places) == 3
     assert page.stopped_early is None and not page.budget_exhausted
-    assert budget.run_units == {"google.agent_tools.search": 1}
+    assert budget.run_units == {"google.agent_tools.search": 1, "google.agent_tools.setup": 3}
 
 
 def test_text_search_accepts_plain_string_and_reviews_empty():

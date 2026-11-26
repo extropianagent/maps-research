@@ -406,9 +406,10 @@ def _bodies_sent_by_providers():
         status = {"id": "t1", "status_code": 20000, "status_message": "Ok.", "result": [{"items": []}]}
         return httpx.Response(200, json={"status_code": 20000, "tasks": [status]})
 
-    budget = Budget(Ledger(":memory:"), mode="quality", max_usd=100)
+    budget = Budget(Ledger(":memory:"), mode="quality", max_usd=100, subjects=["dataforseo"])
+    free = Budget(Ledger(":memory:"))  # apify is recorded as billing none: free-mode rules, inside its credit
     box = BBox(24.6, 46.6, 24.7, 46.7)
-    a = ApifyProvider(budget, token="t", client=httpx.Client(transport=httpx.MockTransport(apify_handler)))
+    a = ApifyProvider(free, token="t", client=httpx.Client(transport=httpx.MockTransport(apify_handler)))
     a.text_search(Query("bakery", "en"), bbox=box)
     a.reviews("ChIJplaceAAAA1", limit=5, language="en")
     a.contributor_reviews("1234567890123", limit=5)

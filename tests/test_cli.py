@@ -1172,7 +1172,7 @@ def refusal(*args):
 
 def test_apify_is_refused_until_the_owner_approves_it(monkeypatch, policy_dir):
     monkeypatch.setenv("APIFY_TOKEN", "tok")
-    msg = refusal("search", "-q", "bakery", "--bbox", BOX, "--provider", "apify", "--cost", "quality")
+    msg = refusal("search", "-q", "bakery", "--bbox", BOX, "--provider", "apify")
     assert "maps policy approve apify --kind provider" in msg
     from maps import policy
 
@@ -1231,7 +1231,7 @@ def test_revoke_removes_an_approval(monkeypatch):
     jrun("policy", "approve", "apify", "--kind", "provider", *APPROVE_ARGS)
     jrun("policy", "revoke", "apify")
     monkeypatch.setenv("APIFY_TOKEN", "tok")
-    refusal("search", "-q", "x", "--bbox", BOX, "--provider", "apify", "--cost", "quality")
+    refusal("search", "-q", "x", "--bbox", BOX, "--provider", "apify")
 
 
 def test_contributor_expansion_needs_its_own_approval(
@@ -1573,9 +1573,7 @@ def test_discover_via_gemini_suspension_exits_3_and_records_the_stop(monkeypatch
         )
 
     monkeypatch.setattr(httpx.Client, "post", post)
-    result = run_cli(
-        "discover", "sourdough", "--via", "gemini", "--cost", "quality", "--max-usd", "1", expect=3
-    )
+    result = run_cli("discover", "sourdough", "--via", "gemini", expect=3)
     doc = json.loads(result.stdout)
     assert doc["policy_stop"]["provider"] == "gemini_maps"
     stops = json.loads((policy_dir / "stops.json").read_text())
@@ -1778,3 +1776,123 @@ def test_eval_compare_rejects_a_bad_baseline_and_an_unknown_run(state, tmp_path)
     assert "baseline" in r.stderr.lower()
     ok = _baseline_file(tmp_path, [{"name": "x"}])
     run_cli("eval", "compare", "nope", "--baseline", ok, expect=2)
+
+
+# --- the circuit breaker: three consecutive provider errors stop a loop ----------------------------
+
+
+class Flaky:
+    """A provider whose reviews() and details() fail or succeed on a script; counts every call."""
+
+    name = "google"
+
+    def __init__(self, script):
+        self.script, self.calls = list(script), 0
+
+    def available(self):
+        return True
+
+    def _next(self):
+        self.calls += 1
+        ok = self.script[(self.calls - 1) % len(self.script)]
+        if not ok:
+            raise ProviderError("google: HTTP 500")
+
+    def reviews(self, place_id, *, limit=5, language=None):
+        self._next()
+        return [Review(place_id=place_id, text="fine", rating=5.0)]
+
+    def details(self, place_id, *, tier="enterprise", language=None):
+        self._next()
+        return Place(place_id, name=f"Name {place_id}", rating=4.4, review_count=30)
+
+
+@pytest.fixture
+def many_places(monkeypatch):
+    class Agg:
+        name = "google_aggregate"
+
+        def available(self):
+            return True
+
+        def enumerate(
+            self, bbox, *, types, min_rating=None, max_rating=None, operational_only=True, max_level=8
+        ):
+            return EnumerationResult(place_ids=[f"g{i}" for i in range(10)], total_count=10, requests=1)
+
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [Agg()])
+    return jrun("enumerate", "--bbox", "24.5,46.5,24.9,46.9", "--type", "bakery")["run_id"]
+
+
+def test_details_stops_after_three_consecutive_provider_errors(many_places, monkeypatch):
+    flaky = Flaky([False])
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [flaky])
+    doc = jrun("details", many_places, "--missing", "--tier", "pro")
+    assert flaky.calls == 3 and len(doc["errors"]) == 3
+    assert "3 consecutive" in doc["stopped"] and "HTTP 500" in doc["stopped"]
+
+
+def test_details_keeps_going_when_errors_are_not_consecutive(many_places, monkeypatch):
+    flaky = Flaky([False, False, True])  # two errors, then a success, over and over
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [flaky])
+    doc = jrun("details", many_places, "--missing", "--tier", "pro")
+    assert flaky.calls == 10 and doc["stopped"] is None and doc["fetched"] == 3
+
+
+def test_reviews_fetch_stops_after_three_consecutive_provider_errors(many_places, monkeypatch):
+    flaky = Flaky([False])
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [flaky])
+    # the run needs places with a name to be ranked and picked: fetch them first with a working provider
+    ok = Flaky([True])
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [ok])
+    jrun("details", many_places, "--missing", "--tier", "pro")
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [flaky])
+    doc = jrun("reviews", "fetch", many_places, "--top", "10")
+    assert flaky.calls == 3 and len(doc["errors"]) == 3
+    assert "3 consecutive" in doc["stopped"] and "HTTP 500" in doc["stopped"]
+
+
+def test_reviews_fetch_keeps_going_when_errors_are_not_consecutive(many_places, monkeypatch):
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [Flaky([True])])
+    jrun("details", many_places, "--missing", "--tier", "pro")
+    flaky = Flaky([False, False, True])
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [flaky])
+    doc = jrun("reviews", "fetch", many_places, "--top", "10")
+    assert flaky.calls == 10 and doc["stopped"] is None and len(doc["places"]) == 3
+
+
+def test_expand_stops_after_three_consecutive_provider_errors(contributor_run, monkeypatch):
+    run_id, l1, l2 = contributor_run
+
+    class Down(FakeContributorProvider):
+        def contributor_reviews(self, contributor, *, limit=10):
+            self.calls.append((contributor, limit))
+            raise ProviderError("apify: HTTP 500")
+
+    fake = Down()
+    monkeypatch.setattr(cli, "build_contributor_provider", lambda budget: fake)
+    store = RunStore.open(cli.config.state_dir(), run_id)
+    for pid in (l1, l2):
+        store.add_reviews(
+            pid,
+            [Review(pid, text="t", rating=5.0, author_id=f"100000000000{i}") for i in range(4, 8)],
+        )
+    doc = jrun("reviews", "contributors", run_id, "--liked", l1, "--liked", l2, "--expand", "7")
+    assert len(fake.calls) == 3 and len(doc["errors"]) == 3
+    assert "3 consecutive" in doc["stopped"] and "HTTP 500" in doc["stopped"]
+
+
+def test_successful_content_is_never_scanned_for_enforcement_wording(many_places, monkeypatch):
+    class Wordy(Flaky):
+        def reviews(self, place_id, *, limit=5, language=None):
+            self.calls += 1
+            return [
+                Review(place_id=place_id, text="my account was suspended, a terms of service abuse", rating=1)
+            ]
+
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [Flaky([True])])
+    jrun("details", many_places, "--missing", "--tier", "pro")
+    wordy = Wordy([True])
+    monkeypatch.setattr(cli, "build_providers", lambda names, budget, tier, bbox: [wordy])
+    doc = jrun("reviews", "fetch", many_places, "--top", "4")
+    assert doc["stopped"] is None and len(doc["places"]) == 4 and "policy_stop" not in doc

@@ -170,7 +170,14 @@ def test_reviews_poll_timeout():
             return httpx.Response(200, json={"tasks": [{"status_code": 20100, "id": "T1"}]})
         return httpx.Response(200, json={"tasks": [{"status_code": 40602}]})
 
-    p, _ = make(handler, poll_timeout=10, poll_interval=5)
+    now = [0.0]  # the loop is bounded by wall-clock time: a sleep advances the injected clock
+    p, _ = make(
+        handler,
+        poll_timeout=10,
+        poll_interval=5,
+        sleep=lambda s: now.__setitem__(0, now[0] + s),
+        clock=lambda: now[0],
+    )
     with pytest.raises(ProviderError, match="timeout") as e:
         p.reviews("ChIJa")
     assert "T1" in str(e.value), "the task id lets the owner fetch the result later instead of paying again"

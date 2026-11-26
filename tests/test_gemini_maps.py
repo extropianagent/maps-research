@@ -59,7 +59,7 @@ class Server:
 
 
 def make(server: Any, *, budget: Budget | None = None, **kw: Any):
-    budget = budget or Budget(Ledger(":memory:"), mode="quality", max_usd=5.0)
+    budget = budget or Budget(Ledger(":memory:"))  # gemini is recorded as billing none: free-mode rules
     client = httpx.Client(transport=httpx.MockTransport(server))
     kw.setdefault("api_key", KEY)
     return GeminiMaps(budget, client=client, **kw), budget
@@ -230,7 +230,7 @@ def test_free_mode_refuses_before_any_request(grant_spend):
     assert s.requests == [] and budget.run_units == {}
 
 
-def test_quality_mode_charges_once_before_the_request():
+def test_charged_once_before_the_request():
     order: list[str] = []
     s = Server()
 
@@ -239,7 +239,7 @@ def test_quality_mode_charges_once_before_the_request():
             order.append(f"charge:{sku_name}:{len(s.requests)}")
             return super().charge(sku_name, units, fingerprint)
 
-    p, budget = make(s, budget=Spy(Ledger(":memory:"), mode="quality", max_usd=1.0))
+    p, budget = make(s, budget=Spy(Ledger(":memory:")))
     p.search_places("x")
     assert order == ["charge:google.gemini_maps_grounding:0"] and len(s.requests) == 1
     assert budget.run_units == {"google.gemini_maps_grounding": 1}

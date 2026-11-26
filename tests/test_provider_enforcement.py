@@ -35,7 +35,13 @@ SIGNALS = [
 
 
 def budget() -> Budget:
-    return Budget(Ledger(":memory:"), mode="quality", max_usd=100.0)
+    """Free-mode rules: google, gemini and apify are recorded as billing none (spending_none)."""
+    return Budget(Ledger(":memory:"))
+
+
+def paid_budget() -> Budget:
+    """DataForSEO has no free allowance: it is recorded as billing enabled and run in quality mode."""
+    return Budget(Ledger(":memory:"), mode="quality", max_usd=100.0, subjects=["dataforseo"])
 
 
 class Counter:
@@ -141,7 +147,7 @@ def test_apify_stops_after_one_request(method, status, message, shape):
 def _dfs(h):
     sleeps: list[float] = []
     p = DataForSEOProvider(
-        budget(), login="l", password="p", client=client(h), sleep=sleeps.append, poll_interval=1.0
+        paid_budget(), login="l", password="p", client=client(h), sleep=sleeps.append, poll_interval=1.0
     )
     return p, sleeps
 

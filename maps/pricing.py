@@ -42,6 +42,11 @@ SKUS: dict[str, Sku] = {
     "google.details.atmosphere": Sku("google", 1_000, 0.025, "Place Details Enterprise + Atmosphere"),
     # --- Google Places Aggregate API ---
     "google.aggregate": Sku("google", 5_000, 0.010, "Places Aggregate computeInsights"),
+    # The free setup requests of the agent-tools client (initialize, notifications/initialized, tools/list):
+    # zero price, but every HTTP request goes through the gateway, so they are counted and can be refused.
+    "google.agent_tools.setup": Sku(
+        "google", float("inf"), 0.0, "Maps Experience agent tools setup requests (not billed)"
+    ),
     "google.agent_tools.search": Sku(
         "google",
         float("inf"),
@@ -65,6 +70,8 @@ SKUS: dict[str, Sku] = {
     # --- DataForSEO: unit = one task ---
     "dataforseo.maps_search": Sku("dataforseo", 0, 0.002, "Google Maps SERP, live, per task"),
     "dataforseo.reviews": Sku("dataforseo", 0, 0.00075, "Google reviews, per 10 reviews"),
+    # task_get polls of a task that is already paid for: zero price, but each one is an HTTP request.
+    "dataforseo.poll": Sku("dataforseo", float("inf"), 0.0, "Reviews task_get poll (not billed)"),
     # --- Offline simulator (sim.py): free, used by tests, evals and dry runs ---
     "sim.search": Sku("sim", float("inf"), 0.0, "Simulated search"),
     "sim.reviews": Sku("sim", float("inf"), 0.0, "Simulated reviews"),

@@ -23,13 +23,23 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import click
 
 from . import __version__, config, evals, filters, policy, render, retrieval, scoring, store
-from .budget import DEPTH_CEILINGS, Budget, BudgetExceeded, GatewayRefusal, Ledger, current_month
+from .budget import (
+    DEPTH_CEILINGS,
+    MAX_DAILY_REQUEST_CAP,
+    Budget,
+    BudgetExceeded,
+    GatewayRefusal,
+    Ledger,
+    current_month,
+    json_number,
+)
 from .geography import BBox
 from .models import Hit, Place, Query
 from .pricing import PRICES_CHECKED, SKUS
@@ -99,10 +109,20 @@ def _exit_on_stop(
     raise click.exceptions.Exit(3)
 
 
+_open_budgets: list[Budget] = []  # every gateway built by this command; closed when it ends
+
+
 class MapsGroup(click.Group):
     """Turns provider and budget failures that escape a command into one-line errors."""
 
     def invoke(self, ctx: click.Context) -> Any:
+        try:
+            return self._invoke(ctx)
+        finally:
+            while _open_budgets:  # a command that has ended holds no run lease
+                _open_budgets.pop().close()
+
+    def _invoke(self, ctx: click.Context) -> Any:
         try:
             return super().invoke(ctx)
         except policy.PolicyViolation as e:
@@ -125,6 +145,8 @@ class MapsGroup(click.Group):
 
 def _clean(obj: Any) -> Any:
     """Make a document valid JSON: unlimited allowances (inf) become the string 'unlimited'."""
+    if isinstance(obj, Decimal):
+        obj = json_number(obj)
     if isinstance(obj, float) and not math.isfinite(obj):
         return "unlimited" if obj > 0 else None
     if isinstance(obj, dict):
@@ -140,6 +162,11 @@ def emit(doc: Any) -> None:
 
 def warn(msg: str) -> None:
     click.echo(msg, err=True)
+
+
+def _breaker_reason(streak: int, last_error: str) -> str:
+    """Why a loop stopped after consecutive provider errors (the circuit breaker)."""
+    return f"stopped after {streak} consecutive provider errors, last: {last_error}"
 
 
 def _open_run(run_id: str) -> RunStore:
@@ -431,13 +458,15 @@ def make_budget(cost: Cost, providers: list[str] | None = None, depth: str | Non
     subjects = None
     if providers is not None:
         subjects = sorted({s for n in providers if (s := policy.spend_subject(n))})
-    return Budget(
+    budget = Budget(
         Ledger(config.ledger_path()),
         mode=cost.mode,
         max_usd=cost.max_usd or 0.0,
         subjects=subjects,
         **ceilings,
     )
+    _open_budgets.append(budget)
+    return budget
 
 
 def _area_users(loc: Location) -> list[str]:
@@ -1275,6 +1304,7 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
     budget = make_budget(cost, ["google"])
     google = _single("google", budget, tier, None)
     fetched, stopped, errors, stop = 0, None, [], None
+    streak = 0  # consecutive provider errors
     for p in todo:
         try:
             got = google.details(p.place_id, tier=tier)
@@ -1286,10 +1316,12 @@ def details(run_id: str, missing: bool, tier: str, cost: Cost, flt: filters.Filt
             break
         except ProviderError as e:
             errors.append(f"{p.place_id}: {e}")
-            if len(errors) >= retrieval.MAX_CONSECUTIVE_ERRORS:
-                stopped = f"stopped after {len(errors)} errors"
+            streak += 1
+            if streak >= retrieval.MAX_CONSECUTIVE_ERRORS:
+                stopped = _breaker_reason(streak, errors[-1])
                 break
             continue
+        streak = 0
         run.record(f"google_details|{p.place_id}|{tier}", [got], saturated=False)
         fetched += 1
         warn(f"[{fetched}/{len(todo)}] details {p.place_id}")
@@ -1352,6 +1384,7 @@ def reviews_fetch(
     prov = _single(provider, budget, spec.get("tier"), bbox)
     done: list[dict[str, Any]] = []
     stopped, errors, stop = None, [], None
+    streak = 0  # consecutive provider errors
     for p in todo:
         try:
             got = prov.reviews(p.place_id, limit=limit)
@@ -1363,7 +1396,12 @@ def reviews_fetch(
             break
         except (ProviderError, KeyError) as e:
             errors.append(f"{p.place_id}: {e}")
+            streak += 1
+            if streak >= retrieval.MAX_CONSECUTIVE_ERRORS:
+                stopped = _breaker_reason(streak, errors[-1])
+                break
             continue
+        streak = 0
         if got:
             run.add_reviews(p.place_id, got)
         done.append({"place_id": p.place_id, "name": p.name, "reviews": len(got)})
@@ -1636,6 +1674,7 @@ def reviews_contributors(
         expanded: list[dict[str, Any]] = []
         errors: list[str] = []
         stopped = None
+        streak = 0  # consecutive provider errors
         for cid in candidates:
             key = f"apify_contributor|{cid}|{limit}"
             if run.done(key) is not None:
@@ -1650,7 +1689,12 @@ def reviews_contributors(
                 break
             except ProviderError as e:
                 errors.append(f"{cid}: {e}")
+                streak += 1
+                if streak >= retrieval.MAX_CONSECUTIVE_ERRORS:
+                    stopped = _breaker_reason(streak, errors[-1])
+                    break
                 continue
+            streak = 0
             run.record(key, got, saturated=False)
             expanded.append({"author_id": cid, "places_added": len(got)})
             warn(f"[{len(expanded)}/{len(candidates)}] contributor {cid}: {len(got)} places")
@@ -1721,6 +1765,12 @@ def policy_status() -> None:
     help="spend, billing enabled: when the owner last read the provider's prices (blocks after 90 days).",
 )
 @click.option("--prices-source", metavar="TEXT", help="spend, billing enabled: where the prices were read.")
+@click.option(
+    "--daily-request-cap",
+    type=click.IntRange(1, MAX_DAILY_REQUEST_CAP),
+    metavar="N",
+    help=f"spend: most requests per day for this subject, 1 to {MAX_DAILY_REQUEST_CAP:,} (default 2,000).",
+)
 def policy_approve(
     subject: str,
     kind: str,
@@ -1737,6 +1787,7 @@ def policy_approve(
     period_cap_usd: float | None,
     prices_checked_on: str | None,
     prices_source: str | None,
+    daily_request_cap: int | None,
 ) -> None:
     """Record the OWNER's approval. Free.
 
@@ -1752,7 +1803,7 @@ def policy_approve(
     feature       SUBJECT reviewer_matching; --rights
     spend         SUBJECT google, gemini, apify or dataforseo; --billing none|enabled and, when
                   enabled: --per-search-cap-usd, --period-cap-usd, --prices-checked-on,
-                  --prices-source
+                  --prices-source; optionally --daily-request-cap
     """
     if kind == "provider":
         details: dict[str, Any] = {
@@ -1776,6 +1827,8 @@ def policy_approve(
         }
         if billing != "enabled":
             details = {"billing": billing}
+        if daily_request_cap is not None:
+            details["daily_request_cap"] = daily_request_cap
     else:
         details = {"data_handling": data_handling}
     emit(policy.approve(subject, kind, owner_statement=owner_statement, details=details))
@@ -1824,6 +1877,60 @@ def policy_clear_stop(provider: str, owner_statement: str) -> None:
     provider said (`maps policy status`).
     """
     emit({"provider": provider, "cleared": policy.clear_stop(provider, owner_statement=owner_statement)})
+
+
+@budget_cmd.command("restore")
+@click.option(
+    "--owner-statement",
+    required=True,
+    metavar="TEXT",
+    help="The owner's own words (the source of the figures).",
+)
+@click.option(
+    "--sku",
+    "figures",
+    multiple=True,
+    metavar="SKU=UNITS",
+    help="This month's units for a SKU, from the provider's console. Repeat. One for every SKU with a "
+    "finite free allowance of each subject.",
+)
+@click.option(
+    "--subject",
+    "subjects",
+    multiple=True,
+    type=click.Choice(list(policy.SPEND_SUBJECTS)),
+    help="A billing subject to restore. Default: every subject recorded with billing enabled.",
+)
+def budget_restore(owner_statement: str, figures: tuple[str, ...], subjects: tuple[str, ...]) -> None:
+    """Re-initialise a missing, emptied or uninitialised usage store from the console's figures. Free.
+
+    A missing usage.json is not zero usage: under billing enabled every chargeable request is refused
+    until the committed file is restored, or the owner copies this month's figures from the provider's
+    console with this command. It needs one --sku SKU=UNITS for every SKU with a finite free allowance
+    of the subjects restored, so an unknown is never taken as zero. The counters never go down. Run it
+    only with the owner's own statement from the current conversation.
+    """
+    parsed: dict[str, str] = {}
+    for item in figures:
+        name, sep, units = item.partition("=")
+        if not sep or not name.strip() or not units.strip():
+            raise CliError(f"--sku needs SKU=UNITS, got {item!r}")
+        parsed[name.strip()] = units.strip()
+    try:
+        numbers = {k: Decimal(v) for k, v in parsed.items()}
+    except ArithmeticError:
+        raise CliError("every --sku figure must be a number") from None
+    chosen = list(subjects) or [
+        r["subject"] for r in policy.spend_records() if r["details"].get("billing") == "enabled"
+    ]
+    try:
+        emit(
+            Budget(Ledger(config.ledger_path())).restore(
+                numbers, owner_statement=owner_statement, subjects=chosen
+            )
+        )
+    except ValueError as e:
+        raise CliError(str(e)) from None
 
 
 @main.command()

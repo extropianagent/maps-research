@@ -35,8 +35,11 @@ Terms (unverified): keep Google Maps source links with any output, and do not se
 model that trains on or retains its input. Callers own that duty; this module keeps `maps_url`,
 `attributions` and the `summary` so they can.
 
-Every `tools/call` is charged to the budget immediately before it is sent; `initialize` and
-`tools/list` are not billable.
+Every request is charged to the budget immediately before it is sent. A `tools/call` is charged to
+`google.agent_tools.search`; `initialize`, `notifications/initialized` and each `tools/list` page are
+not billable but are requests all the same: they are charged to the zero-price SKU
+`google.agent_tools.setup`, so they count toward `max_requests`, obey the kill switch and the daily cap,
+and obey the repeated-request rule.
 """
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ DEFAULT_ENDPOINT = "https://mapstools.googleapis.com/mcp"
 PROTOCOL_VERSION = "2025-06-18"
 TOOL_NAME = "search_places"
 SKU = "google.agent_tools.search"
+SETUP_SKU = "google.agent_tools.setup"
 RAW_TEXT_LIMIT = 2_000
 MAX_BIAS_RADIUS_M = 50_000.0  # inputSchema: "The radius must be within 50,000 meters"
 MAX_FREE_PAGE_SIZE = 5  # pageSize above 5 is billed at a higher tier
@@ -317,11 +321,20 @@ class MapsAgentTools:
             raise ProviderError(self._scrub(f"google_agent_tools: {text}"))
         return msg
 
-    def _rpc(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _charge_setup(self, payload: dict[str, Any]) -> None:
+        """A setup request is still a request: charged (at zero price) before it is sent."""
+        self.budget.charge(SETUP_SKU, fingerprint=Budget.fingerprint("POST", self._endpoint, payload))
+
+    def _rpc(
+        self, method: str, params: dict[str, Any] | None = None, *, setup: bool = True
+    ) -> dict[str, Any]:
+        """Send one JSON-RPC request. `setup=False` only for `tools/call`, which its caller charged."""
         self._next_id += 1
         payload: dict[str, Any] = {"jsonrpc": "2.0", "id": self._next_id, "method": method}
         if params is not None:
             payload["params"] = params
+        if setup:
+            self._charge_setup(payload)
         msg = self._post(payload)
         assert msg is not None
         result = msg.get("result")
@@ -340,7 +353,9 @@ class MapsAgentTools:
         )
         proto = result.get("protocolVersion")
         self._protocol = proto if isinstance(proto, str) and proto else PROTOCOL_VERSION
-        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"}, notification=True)
+        note = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        self._charge_setup(note)
+        self._post(note, notification=True)
         self._initialized = True
 
     def input_schema(self) -> dict[str, Any]:
@@ -468,7 +483,7 @@ class MapsAgentTools:
         args = self._arguments(text, bbox, language, page_size)
         call = {"name": TOOL_NAME, "arguments": args}
         self.budget.charge(SKU, fingerprint=Budget.fingerprint("POST", self._endpoint, call))
-        result = self._rpc("tools/call", call)
+        result = self._rpc("tools/call", call, setup=False)
         if result.get("isError"):
             blocks = [b["text"] for b in result.get("content") or [] if isinstance(b, dict) and b.get("text")]
             detail = " ".join(blocks)

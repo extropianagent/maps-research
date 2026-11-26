@@ -198,6 +198,10 @@ class ApifyProvider:
         return SearchPage(places=places, saturated=len(items) >= max_results)
 
     def reviews(self, place_id: str, *, limit: int = 5, language: str | None = None) -> list[Review]:
+        """Reviews of one place. Reserves `limit` x `apify.review` AND 1 x `apify.place` in one charge:
+        the actor scrapes the place itself, so the place is billed too. The actor's exact billing events
+        for a reviews run are unconfirmed (not checked against a live bill); the reservation errs on the
+        side of counting more."""
         payload: dict[str, Any] = {
             "placeIds": [place_id],
             "maxReviews": limit,
@@ -206,8 +210,9 @@ class ApifyProvider:
         }
         if language:
             payload["language"] = language
-        self.budget.charge(
-            "apify.review", units=limit, fingerprint=Budget.fingerprint("POST", self._url(ACTOR), payload)
+        self.budget.charge_many(
+            [("apify.place", 1), ("apify.review", limit)],
+            fingerprint=Budget.fingerprint("POST", self._url(ACTOR), payload),
         )
         out: list[Review] = []
         for item in self._run(payload):

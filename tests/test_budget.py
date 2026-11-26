@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 from maps import budget as budget_mod
@@ -50,7 +52,7 @@ def test_unlimited_free_sku_is_never_refused(ledger):
 def test_provider_credit_makes_paid_units_free_until_it_is_used_up(ledger):
     b = Budget(ledger)
     q = b.charge("apify.place", 100)
-    assert q.billable_usd == pytest.approx(0.4)
+    assert q.billable_usd == Decimal("0.4")  # exact
     assert q.out_of_pocket_usd == 0
     with pytest.raises(BudgetExceeded, match="credit"):
         b.charge("apify.place", 1100)  # would pass 90% of the $5 monthly credit
@@ -60,7 +62,7 @@ def test_quality_mode_spends_up_to_max_usd_and_then_stops(ledger):
     b = Budget(ledger, mode="quality", max_usd=0.01)
     for _ in range(5):
         b.charge("dataforseo.maps_search")
-    assert b.run_usd == pytest.approx(0.01)
+    assert b.run_usd == Decimal("0.010")  # exact: five tasks of $0.002
     with pytest.raises(BudgetExceeded, match="authorized"):
         b.charge("dataforseo.maps_search")
 
@@ -86,6 +88,7 @@ def test_usage_is_counted_per_billing_month(ledger, monkeypatch):
 
 def test_ledger_persists_across_processes(tmp_path):
     path = tmp_path / "state" / "usage.json"
+    Ledger(path).initialize()  # the owner's spend record created the store
     Budget(Ledger(path)).charge("google.aggregate", 3)
     assert Ledger(path).units("google.aggregate") == 3
 

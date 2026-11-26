@@ -49,7 +49,13 @@ def state(tmp_path, monkeypatch):
 
 
 def budget() -> Budget:
-    return Budget(Ledger(":memory:"), mode="quality", max_usd=100.0)
+    """Free-mode rules: google, gemini and apify are recorded as billing none (spending_none)."""
+    return Budget(Ledger(":memory:"))
+
+
+def paid_budget() -> Budget:
+    """DataForSEO has no free allowance: it is recorded as billing enabled and run in quality mode."""
+    return Budget(Ledger(":memory:"), mode="quality", max_usd=100.0, subjects=["dataforseo"])
 
 
 # --- 1. enforcement detection ------------------------------------------------------------------
@@ -256,7 +262,7 @@ def test_agent_tool_error_with_real_enforcement_stops():
 
 def test_dataforseo_and_apify_ordinary_errors_are_not_stops():
     d = DataForSEOProvider(
-        budget(),
+        paid_budget(),
         login="a",
         password="b",
         client=httpx.Client(

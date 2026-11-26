@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
@@ -99,8 +100,18 @@ def _write(name: str, records: Any) -> None:
 # --- approvals --------------------------------------------------------------------------------
 
 
+MAX_CAP_USD = 10**9  # a spending cap above this is not a cap: the record is unusable
+MAX_DAILY_REQUEST_CAP = 20_000
+
+
 def _is_number(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+    return (
+        isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and 0 <= v <= MAX_CAP_USD
+    )
+
+
+def _is_daily_cap(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= MAX_DAILY_REQUEST_CAP
 
 
 def _spend_details_problem(details: Any) -> str | None:
@@ -109,6 +120,8 @@ def _spend_details_problem(details: Any) -> str | None:
         return "no details"
     if details.get("billing") not in ("none", "enabled"):
         return "billing must be 'none' or 'enabled'"
+    if "daily_request_cap" in details and not _is_daily_cap(details["daily_request_cap"]):
+        return f"daily_request_cap must be a whole number from 1 to {MAX_DAILY_REQUEST_CAP:,}"
     if details["billing"] == "none":
         return None
     bad = [k for k in ("per_search_cap_usd", "period_cap_usd") if not _is_number(details.get(k))]
@@ -123,7 +136,10 @@ def _spend_details_problem(details: Any) -> str | None:
     if not isinstance(source, str) or not source.strip():
         bad.append("prices_source")
     if bad:
-        return f"details missing or invalid: {', '.join(bad)} (numbers must be finite and >= 0, dates ISO)"
+        return (
+            f"details missing or invalid: {', '.join(bad)} "
+            f"(numbers must be finite, >= 0 and <= {MAX_CAP_USD:,}; dates ISO)"
+        )
     return None
 
 
@@ -132,6 +148,8 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
     if not (owner_statement or "").strip():
         raise PolicyViolation("an approval needs the owner's own statement (owner_statement)")
     details = {k: (v.strip() if isinstance(v, str) else v) for k, v in (details or {}).items()}
+    if details.get("daily_request_cap") is None:
+        details.pop("daily_request_cap", None)
     stored: dict[str, Any]
     if kind == "provider":
         if subject not in CONDITIONAL:
@@ -168,6 +186,8 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
         if problem:
             raise PolicyViolation(f"spending authorization for {subject} is invalid: {problem}")
         required = ("billing",) if details["billing"] == "none" else ("billing", *SPEND_ENABLED_DETAILS)
+        if details.get("daily_request_cap") is not None:
+            required = (*required, "daily_request_cap")
     else:
         raise PolicyViolation(f"unknown approval kind {kind!r}; use one of: {', '.join(KINDS)}")
     missing = [k for k in required if details.get(k) in (None, "")]
@@ -187,7 +207,20 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
         if not (isinstance(r, dict) and (r.get("subject"), r.get("kind")) == (subject, kind))
     ]
     _write("approvals.json", [*kept, record])
+    if kind == "spend":
+        _initialise_usage_store()
     return record
+
+
+def _initialise_usage_store() -> None:
+    """A spend record is the moment the usage store starts to exist: from now on a missing store is not
+    zero usage. A store that cannot be used is left alone (the gateway refuses it, with the reason)."""
+    from .budget import Ledger, LedgerUnavailable
+
+    try:
+        Ledger(config.ledger_path()).initialize()
+    except LedgerUnavailable:
+        pass
 
 
 def revoke(subject: str) -> int:
@@ -765,6 +798,62 @@ def provider_status(name: str) -> dict[str, Any]:
     }
 
 
+PROVENANCE_NOTE = (
+    "Records are files an agent with a shell can write. A record that is new or changed since the "
+    "last commit was made in this session."
+)
+PROVENANCE_FILES = ("approvals.json", "stops.json", "usage.json", KILL_FILE)
+
+
+def _git(args: list[str], cwd: Path) -> int | None:
+    """The exit code of a read-only git command, or None when git cannot answer (not installed, no
+    checkout, no such folder, no answer in time)."""
+    try:
+        done = subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None if done.returncode == 128 else done.returncode
+
+
+def records_provenance() -> dict[str, Any]:
+    """For each record file: is it tracked by git, and identical to the committed version?
+
+    The toolkit's own read-only use of git (`ls-files`, `diff --quiet`). "unknown" when git is not
+    installed or the folder is not a checkout. Informational: no behaviour depends on it.
+    """
+    directory = config.policy_dir()
+    files: dict[str, Any] = {}
+    for name in PROVENANCE_FILES:
+        tracked = _git(["ls-files", "--error-unmatch", "--", name], directory)
+        if tracked is None:
+            tracked_s, same_s, summary = (
+                "unknown",
+                "unknown",
+                "git cannot say (not a checkout, or git missing)",
+            )
+        elif tracked != 0:
+            tracked_s, same_s = "no", "no"
+            summary = (
+                "not tracked by git: new since the last commit" if (directory / name).exists() else "absent"
+            )
+        else:
+            changed = _git(["diff", "--quiet", "HEAD", "--", name], directory)
+            tracked_s = "yes"
+            same_s = "unknown" if changed is None else ("yes" if changed == 0 else "no")
+            summary = {"yes": "identical to the last commit", "no": "changed since the last commit"}.get(
+                same_s, "git cannot say"
+            )
+        files[name] = {
+            "exists": (directory / name).exists(),
+            "tracked": tracked_s,
+            "same_as_commit": same_s,
+            "summary": summary,
+        }
+    return {"note": PROVENANCE_NOTE, "files": files}
+
+
 def status() -> dict[str, Any]:
     state = config.state_dir()
     try:
@@ -782,6 +871,7 @@ def status() -> dict[str, Any]:
         "open_stops": open_stops(),
         "invalid_stops": invalid_stops(),
         "kill_switch": kill_status(),
+        "records_provenance": records_provenance(),
         "spend_records": spend_records(),
         "features": {f: {"approved": approved(f, "feature") is not None} for f in FEATURES},
         "proxy": proxy_status(),
