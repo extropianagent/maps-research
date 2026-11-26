@@ -40,6 +40,20 @@ says popularity should not count, rank with `gems` whatever the objective.
 
 **Done when** you can state all five in one line.
 
+Then read the one domain module the request falls under. Each adds the
+keywords, filters, evidence words and report details of its domain:
+
+| The request is about | Read |
+|---|---|
+| restaurants, cafes, bakeries, a dish | `domains/food.md` |
+| hotels or anywhere to stay | `domains/hotels.md` |
+| shops, or where to buy a product | `domains/shopping.md` |
+| a tradesperson, contractor or service to hire | `domains/hiring.md` |
+| what to see or do in a city or district | `domains/city-exploration.md` |
+| whether a place's reviews or reputation hold up | `domains/investigation.md` |
+
+Anything else: continue with this file alone.
+
 ## 2. Keywords
 
 Write the query list before searching: what locals type, in every language

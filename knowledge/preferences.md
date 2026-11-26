@@ -18,10 +18,12 @@ whether "don't prioritize popularity" is a standing default.
 
 ## By category
 
+One heading per domain module in `skills/maps-research/domains/` (Food, Hotels,
+Shopping, Hiring, City exploration). Each module lists what is worth recording.
 Nothing recorded yet. Example of the shape:
 
 ```markdown
-### Bakeries
+### Food
 - YYYY-MM-DD: "I care about bread, not cakes." Prefer places whose reviews
   mention sourdough, crust, baguette over patisserie-led places.
 ```
