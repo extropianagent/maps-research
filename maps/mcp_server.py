@@ -175,6 +175,7 @@ def search_argv(
     top: int | None = None,
     resume: str | None = None,
     max_tasks: int | None = None,
+    service_area_businesses: bool = False,
     **filters: Any,
 ) -> list[str]:
     return [
@@ -188,6 +189,7 @@ def search_argv(
         *_opt("--top", top),
         *_opt("--resume", resume),
         *_opt("--max-tasks", max_tasks),
+        *(["--service-area-businesses"] if service_area_businesses else []),
         *filter_args(**filters),
         *cost_args(cost, max_usd),
     ]
@@ -246,6 +248,7 @@ def maps_search(
     top: int | None = None,
     resume: str | None = None,
     max_tasks: int | None = None,
+    service_area_businesses: bool = False,
     min_rating: float | None = None,
     max_rating: float | None = None,
     min_reviews: int | None = None,
@@ -263,6 +266,8 @@ def maps_search(
     cost="quality" allows paid requests up to max_usd dollars; max_usd is ignored with cost="free".
     Area: give one of area (name; costs 1 Google call the first time), bbox "S,W,N,E" (free) or
     near "LAT,LNG" with radius in meters (free). Queries may be 'text:lang', e.g. 'bakery:en'.
+    service_area_businesses: also return pure service-area businesses (Google only); they may have
+    no coordinates.
     Output: run_id, coverage (what was and was not searched), budget, matched, results.
     Results are stored as a run; maps_rank re-ranks them without further cost.
     """
@@ -282,6 +287,7 @@ def maps_search(
             top=top,
             resume=resume,
             max_tasks=max_tasks,
+            service_area_businesses=service_area_businesses,
             min_rating=min_rating,
             max_rating=max_rating,
             min_reviews=min_reviews,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -20,17 +21,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 MAX_RETENTION_DAYS = 30.0  # Maps content may not be kept longer (docs/permissions.md)
 
 
+_policy_dir_override: Path | None = None
+
+
+def set_policy_dir_for_tests(path: Path | str | None) -> None:
+    """Redirect the policy folder. For tests only: there is deliberately no environment variable."""
+    global _policy_dir_override
+    _policy_dir_override = Path(path) if path is not None else None
+
+
 def policy_dir() -> Path:
-    """Approvals and stops live in the repo so they survive ephemeral machines."""
-    return Path(os.environ.get("MAPS_POLICY_DIR") or REPO_ROOT / "policy")
+    """Approvals and stops live in the repo so they survive ephemeral machines. Not configurable."""
+    return _policy_dir_override or REPO_ROOT / "policy"
 
 
 def _requested_retention() -> float:
+    """The configured days, or the cap when unset or unusable (non-finite, zero, negative, unparsable)."""
     raw = os.environ.get("MAPS_RETENTION_DAYS")
     try:
-        return float(raw) if raw else MAX_RETENTION_DAYS
+        days = float(raw) if raw else MAX_RETENTION_DAYS
     except ValueError:
         return MAX_RETENTION_DAYS
+    return days if math.isfinite(days) and days > 0 else MAX_RETENTION_DAYS
 
 
 def retention_clamped() -> bool:
@@ -39,7 +51,7 @@ def retention_clamped() -> bool:
 
 
 def retention_days() -> float:
-    """Runs older than this are deleted at the start of every search. Never more than 30."""
+    """Runs older than this are deleted on every command. Always finite, in (0, 30]."""
     return min(_requested_retention(), MAX_RETENTION_DAYS)
 
 

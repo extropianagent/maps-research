@@ -101,25 +101,23 @@ class GooglePlaces:
         json: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Charge once, send, retry once on 429/503. Raises BudgetExceeded before any HTTP."""
+        """Charge once, send, retry once on a plain 429/503 (never after an enforcement signal)."""
         if not self._key:
             raise ProviderError("google: GOOGLE_MAPS_API_KEY is not set")
         policy.check_google_key(self._key)
         self.budget.charge(sku)
         headers = {"X-Goog-Api-Key": self._key, "X-Goog-FieldMask": mask}
         resp: httpx.Response | None = None
+        detail = ""
         for attempt in (0, 1):
             try:
                 resp = self._client.request(method, url, json=json, params=params, headers=headers)
             except httpx.HTTPError as e:
                 raise ProviderError(f"google: request failed ({type(e).__name__})") from None
-            if resp.status_code in (429, 503) and attempt == 0:
-                self._sleep(2)
-                continue
-            break
-        assert resp is not None
-        detail = ""
-        if not 200 <= resp.status_code < 300:
+            if 200 <= resp.status_code < 300:
+                break
+            # An enforcement signal is checked first: never retried, never slept on, never mapped to quota.
+            detail = ""
             try:
                 err = resp.json().get("error")
                 if isinstance(err, dict):
@@ -129,6 +127,11 @@ class GooglePlaces:
             reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
             if reason:
                 raise PolicyStop(self.name, self._scrub(f"HTTP {resp.status_code}: {detail or reason}"))
+            if resp.status_code in (429, 503) and attempt == 0:
+                self._sleep(2)
+                continue
+            break
+        assert resp is not None
         if resp.status_code == 429:
             raise QuotaExceeded(
                 "google: HTTP 429, the provider's quota was reached; "
@@ -157,6 +160,7 @@ class GooglePlaces:
         min_rating: float | None = None,
         included_type: str | None = None,
         tier: str | None = None,
+        include_service_area_businesses: bool = False,
     ) -> SearchPage:
         tier = _check_tier(tier or self.tier)
         cap = min(max_results, RESULT_CAP)
@@ -172,6 +176,9 @@ class GooglePlaces:
             }
         if min_rating is not None:
             base["minRating"] = min_rating
+        if include_service_area_businesses:
+            # Such businesses have no address or location on Maps; their places may carry no coordinates.
+            base["includePureServiceAreaBusinesses"] = True
         if included_type:
             base["includedType"] = included_type
             base["strictTypeFiltering"] = True

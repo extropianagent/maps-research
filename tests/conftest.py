@@ -2,15 +2,16 @@
 
 import pytest
 
-from maps import policy
+from maps import config, policy
 
 
 @pytest.fixture(autouse=True)
 def policy_dir(tmp_path_factory, monkeypatch):
     path = tmp_path_factory.mktemp("policy")
-    monkeypatch.setenv("MAPS_POLICY_DIR", str(path))
+    config.set_policy_dir_for_tests(path)
     monkeypatch.delenv("MAPS_AI_HOST", raising=False)
-    return path
+    yield path
+    config.set_policy_dir_for_tests(None)
 
 
 @pytest.fixture

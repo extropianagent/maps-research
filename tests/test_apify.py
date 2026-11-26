@@ -170,12 +170,6 @@ PID_A = "ChIJaaaaaaaaaa"
 PID_B = "ChIJbbbbbbbbbb"
 
 
-@pytest.fixture(autouse=True)
-def _no_contributor_env(monkeypatch):
-    monkeypatch.delenv("MAPS_APIFY_CONTRIBUTOR_ACTOR", raising=False)
-    monkeypatch.delenv("MAPS_APIFY_CONTRIBUTOR_INPUT", raising=False)
-
-
 def citem(pid: str | None, **kw) -> dict:
     d: dict = {"title": f"P-{pid}", "stars": 4, "totalScore": 4.6, "text": "nice"}
     if pid:
@@ -230,38 +224,43 @@ def test_contributor_default_actor_and_input():
     assert seen["body"] == {"startUrls": [{"url": CURL}], "maxItems": 7}
 
 
-def test_contributor_actor_env_override(monkeypatch):
-    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_ACTOR", "johnvc~google-maps-contributor-reviews-api")
+OLD_ENV_TEMPLATE = {
+    "searchStringsArray": ["bakery Riyadh"],
+    "maxCrawledPlacesPerSearch": 5000,
+    "maxItems": 5000,
+    "x": "{contributor_url}",
+}
+
+
+def test_the_old_contributor_env_vars_change_neither_url_nor_body(monkeypatch):
+    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_ACTOR", "compass~crawler-google-places")
+    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_INPUT", json.dumps(OLD_ENV_TEMPLATE))
     seen: dict = {}
     p, _ = make(capture([], seen))
-    p.contributor_reviews(CURL)
-    assert "/acts/johnvc~google-maps-contributor-reviews-api/run-sync" in seen["url"]
+    p.contributor_reviews(CID, limit=7)
+    assert "/acts/lexis-solutions~google-maps-contributor-reviews-scraper/run-sync" in seen["url"]
+    assert seen["body"] == {"startUrls": [{"url": CURL}], "maxItems": 7}
 
 
-def test_contributor_input_template_env(monkeypatch):
-    monkeypatch.setenv(
-        "MAPS_APIFY_CONTRIBUTOR_INPUT",
-        json.dumps(
-            {
-                "id": "{contributor_id}",
-                "urls": ["{contributor_url}", {"n": "{limit}"}],
-                "tag": "u-{contributor_id}",
-            }
-        ),
-    )
-    seen: dict = {}
-    p, _ = make(capture([], seen))
-    p.contributor_reviews(CID, limit=4)
-    assert seen["body"] == {"id": CID, "urls": [CURL, {"n": 4}], "tag": f"u-{CID}"}
+def test_contributor_actor_is_a_one_entry_allow_list_in_code():
+    from maps.providers import apify
+
+    assert apify.CONTRIBUTOR_ACTORS == ("lexis-solutions~google-maps-contributor-reviews-scraper",)
+    assert apify.CONTRIBUTOR_ACTOR in apify.CONTRIBUTOR_ACTORS
+    p, _ = make(capture([]))
+    with pytest.raises(ProviderError, match="allow-list"):
+        p._run({"startUrls": []}, "someone~else")
 
 
-def test_contributor_input_template_invalid_json(monkeypatch):
-    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_INPUT", "{not json")
-    calls: list = []
-    p, budget = make(lambda r: calls.append(r) or httpx.Response(201, json=[]))
-    with pytest.raises(ProviderError, match="MAPS_APIFY_CONTRIBUTOR_INPUT"):
-        p.contributor_reviews(CID)
-    assert calls == [] and budget.run_units == {}
+def test_no_apify_setting_comes_from_the_environment_except_the_token():
+    import inspect
+    import re
+
+    from maps.providers import apify
+
+    assert re.findall(r"environ[^\n]*", inspect.getsource(apify).split('"""', 2)[2]) == [
+        'environ.get("APIFY_TOKEN", "")'
+    ]
 
 
 def test_contributor_invalid_id_raises_before_charge():
@@ -408,29 +407,15 @@ def test_suspension_is_a_policy_stop_but_an_invalid_token_is_an_ordinary_error()
     assert not isinstance(e2.value, PolicyStop)
 
 
-def test_cookie_bearing_contributor_template_is_refused_before_any_request(monkeypatch):
-    from maps import policy
-
-    seen = []
-    p, budget = make(lambda req: seen.append(req) or httpx.Response(200, json=[]))
+def test_a_cookie_bearing_env_template_is_ignored_not_sent(monkeypatch):
+    seen: dict = {}
+    p, _ = make(capture([], seen))
     monkeypatch.setenv(
         "MAPS_APIFY_CONTRIBUTOR_INPUT",
         json.dumps({"startUrls": [{"url": "{contributor_url}"}], "cookies": [{"name": "SID"}]}),
     )
-    with pytest.raises(policy.PolicyViolation, match="Google credentials"):
-        p.contributor_reviews("1234567890123456789")
-    assert seen == [] and budget.run_units == {}
-
-
-def test_a_session_cookie_value_after_substitution_is_refused(monkeypatch):
-    from maps import policy
-
-    seen = []
-    p, _ = make(lambda req: seen.append(req) or httpx.Response(200, json=[]))
-    monkeypatch.setenv("MAPS_APIFY_CONTRIBUTOR_INPUT", json.dumps({"extra": "SAPISID=abc {contributor_id}"}))
-    with pytest.raises(policy.PolicyViolation):
-        p.contributor_reviews("1234567890123456789")
-    assert seen == []
+    p.contributor_reviews("1234567890123456789")
+    assert "cookies" not in seen["body"] and "SID" not in json.dumps(seen["body"])
 
 
 def test_search_payload_with_a_proxy_option_is_refused():

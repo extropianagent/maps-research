@@ -92,3 +92,20 @@ def test_purge_deletes_only_runs_older_than_the_retention_window(tmp_path):
 
 def test_run_ids_are_unique_within_the_same_second(tmp_path):
     assert RunStore.create(tmp_path, {}).run_id != RunStore.create(tmp_path, {}).run_id
+
+
+def test_purge_removes_expired_area_cache_entries(tmp_path):
+    import json
+
+    now = time.time()
+    (tmp_path / "areas.json").write_text(
+        json.dumps({"old": {"ts": now - 40 * 86400}, "new": {"ts": now - 86400}, "junk": "x", "nots": {}})
+    )
+    purge(tmp_path, older_than_days=30)
+    assert list(json.loads((tmp_path / "areas.json").read_text())) == ["new"]
+
+
+def test_purge_survives_a_missing_or_corrupt_area_cache(tmp_path):
+    purge(tmp_path, older_than_days=30)
+    (tmp_path / "areas.json").write_text("{not json")
+    purge(tmp_path, older_than_days=30)

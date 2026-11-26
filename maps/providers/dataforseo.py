@@ -103,6 +103,14 @@ class DataForSEOProvider:
             data = resp.json()
         except ValueError:
             raise ProviderError("dataforseo: response is not JSON") from None
+        if isinstance(data, dict):
+            # Enforcement wording in any status message wins over "malformed" and "task failed".
+            tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+            for holder in (data, *(t for t in tasks if isinstance(t, dict))):
+                msg = holder.get("status_message")
+                reason = policy.detect_enforcement(200, msg if isinstance(msg, str) else "")
+                if reason:
+                    raise PolicyStop(self.name, f"status {holder.get('status_code')}: {str(msg)[:200]}")
         if not isinstance(data, dict) or not isinstance(data.get("tasks"), list) or not data["tasks"]:
             raise ProviderError("dataforseo: unexpected payload (no tasks)")
         return data

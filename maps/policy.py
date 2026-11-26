@@ -21,8 +21,8 @@ from .providers.base import PolicyStop
 __all__ = ["PolicyStop", "PolicyViolation"]
 
 CORE = {"google", "google_aggregate", "google_agent_tools", "gemini_maps", "sim"}
-# Third-party extraction: usable only after a recorded approval. `outscraper` is registered, not implemented.
-CONDITIONAL = {"apify", "dataforseo", "apify_contributor", "outscraper"}
+# Third-party extraction: usable only after a recorded approval. `outscraper` and `hasdata` are registered, not implemented.
+CONDITIONAL = {"apify", "dataforseo", "apify_contributor", "outscraper", "hasdata"}
 EXCLUDED_METHODS = (
     "unofficial browser scraping with a Google account",
     "CAPTCHA-solving services",
@@ -36,10 +36,11 @@ OWNER_RESPONSIBILITIES = [
 ]
 # A stop on one of these blocks the others: they share one key or one vendor account.
 FAMILIES = (
-    {"google", "google_aggregate", "google_agent_tools"},
+    {"google", "google_aggregate", "google_agent_tools", "gemini_maps"},
     {"apify", "apify_contributor"},
 )
 PROVIDER_DETAILS = ("data_rights", "retrieval_method", "downstream_use")
+REQUIRED_DETAILS = {"provider": PROVIDER_DETAILS, "ai_host": ("data_handling",)}
 
 
 class PolicyViolation(RuntimeError):
@@ -106,7 +107,11 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
         "owner_statement": owner_statement.strip(),
         "details": {k: details[k] for k in required},
     }
-    kept = [r for r in _read("approvals.json") if (r.get("subject"), r.get("kind")) != (subject, kind)]
+    kept = [
+        r
+        for r in _read("approvals.json")
+        if not (isinstance(r, dict) and (r.get("subject"), r.get("kind")) == (subject, kind))
+    ]
     _write("approvals.json", [*kept, record])
     return record
 
@@ -114,21 +119,53 @@ def approve(subject: str, kind: str, *, owner_statement: str, details: dict[str,
 def revoke(subject: str) -> int:
     """Remove every approval of `subject`; returns how many were removed."""
     records = _read("approvals.json")
-    kept = [r for r in records if r.get("subject") != subject]
+    kept = [r for r in records if not (isinstance(r, dict) and r.get("subject") == subject)]
     if len(kept) != len(records):
         _write("approvals.json", kept)
     return len(records) - len(kept)
 
 
+def _record_problem(r: Any) -> str | None:
+    """Why a stored approval is not usable, or None when it is complete."""
+    if not isinstance(r, dict):
+        return "not an object"
+    if not isinstance(r.get("subject"), str) or not r["subject"].strip():
+        return "no subject"
+    required = REQUIRED_DETAILS.get(r.get("kind"))  # type: ignore[arg-type]
+    if required is None:
+        return f"unknown kind {r.get('kind')!r}"
+    if not isinstance(r.get("owner_statement"), str) or not r["owner_statement"].strip():
+        return "no owner_statement"
+    details = r.get("details")
+    if not isinstance(details, dict):
+        return "no details"
+    missing = [k for k in required if not isinstance(details.get(k), str) or not details[k].strip()]
+    return f"details missing: {', '.join(missing)}" if missing else None
+
+
 def approvals() -> list[dict[str, Any]]:
-    return _read("approvals.json")
+    """The complete approval records."""
+    return [r for r in _read("approvals.json") if _record_problem(r) is None]
+
+
+def invalid_approvals() -> list[dict[str, Any]]:
+    """Stored records that are malformed or incomplete, with the reason; they approve nothing."""
+    return [{"record": r, "problem": p} for r in _read("approvals.json") if (p := _record_problem(r))]
 
 
 def approved(subject: str, kind: str) -> dict[str, Any] | None:
     for r in _read("approvals.json"):
-        if r.get("subject") == subject and r.get("kind") == kind:
+        if _record_problem(r) is None and r["subject"] == subject and r["kind"] == kind:
             return r
     return None
+
+
+def _incomplete(subject: str, kind: str) -> bool:
+    """True when a record names this subject and kind but is not usable."""
+    return any(
+        isinstance(r, dict) and r.get("subject") == subject and r.get("kind") == kind and _record_problem(r)
+        for r in _read("approvals.json")
+    )
 
 
 # --- stops ------------------------------------------------------------------------------------
@@ -187,6 +224,13 @@ def require_provider(name: str) -> None:
             "in maps/policy.py first"
         )
     if name in CONDITIONAL and approved(name, "provider") is None:
+        if _incomplete(name, "provider"):
+            raise PolicyViolation(
+                f"the approval record for {name} in policy/approvals.json is incomplete; it approves "
+                f"nothing. Record it again with the owner's statement: maps policy approve {name} --kind "
+                'provider --owner-statement "<owner\'s words>" --data-rights "..." --retrieval-method '
+                '"..." --downstream-use "..."'
+            )
         raise PolicyViolation(
             f"{name} is third-party extraction and is blocked until the owner approves it. Verify its "
             "data rights (what its terms let you do with the data), its retrieval method (no logged-in "
@@ -214,6 +258,12 @@ def require_ai_host() -> str:
             '--data-handling "<what the host\'s settings say>"'
         )
     if approved(host, "ai_host") is None:
+        if _incomplete(host, "ai_host"):
+            raise PolicyViolation(
+                f"the approval record for AI host {host!r} in policy/approvals.json is incomplete; it "
+                f"approves nothing. Record it again: maps policy approve {host} --kind ai_host "
+                '--owner-statement "<owner\'s words>" --data-handling "<what the host\'s settings say>"'
+            )
         raise PolicyViolation(
             f"AI host {host!r} has no recorded approval of its data settings (no training on or "
             f"retention of input): maps policy approve {host} --kind ai_host --owner-statement \"<owner's "
@@ -222,56 +272,99 @@ def require_ai_host() -> str:
     return host
 
 
-_BAD_KEYS = ("cookie", "session", "password", "passwd", "login", "credential", "proxy", "captcha")
-_COOKIE_VALUE = re.compile(r"(?<![A-Za-z0-9_])(SID|HSID|SSID|SAPISID)=|__Secure-[13]PSID")
+_BAD_KEY_TOKENS = frozenset(
+    {
+        "cookie", "cookies", "session", "sessionid", "password", "passwd", "pwd", "pass", "pw", "login",
+        "credential", "credentials", "auth", "authorization", "token", "account", "proxy", "proxies",
+        "captcha", "rotate", "residential",
+    }
+)  # fmt: skip
+_CIRCUMVENT_TOKENS = frozenset({"proxy", "proxies", "captcha", "rotate", "residential"})
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_COOKIE_VALUE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:SID|HSID|SSID|APISID|SAPISID|LSID|OSID|NID)=|(?:__Secure-|__Host-)[A-Za-z0-9_-]*="
+)
+_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]*)://([^\s/?#]*)([^\s]*)")
 _CREDENTIAL_MSG = "no personal Google credentials may be sent to extraction tools"
 _CIRCUMVENT_MSG = (
     "no circumvention options (proxy, CAPTCHA, session or login handling) may be sent to extraction tools"
 )
 
 
+def _key_tokens(key: Any) -> set[str]:
+    """Word tokens of a key: split on non-alphanumerics and camelCase boundaries, lower-cased."""
+    out: set[str] = set()
+    for part in re.split(r"[^A-Za-z0-9]+", str(key)):
+        out.update(t.lower() for t in _CAMEL.split(part) if t)
+    return out
+
+
+def _bad_value(text: str) -> str | None:
+    """Why a string value may not be sent, or None."""
+    low = text.lower()
+    if _COOKIE_VALUE.search(text) or "sapisidhash" in low or "ya29." in low or text.strip().startswith("1//"):
+        return _CREDENTIAL_MSG
+    for m in _URL.finditer(text):
+        scheme, authority, rest = m.group(1).lower(), m.group(2), m.group(3)
+        if "@" in authority and ":" in authority.split("@", 1)[0]:
+            return _CREDENTIAL_MSG
+        if scheme.startswith("socks") or "proxy" in authority.lower() or "proxy" in rest.lower():
+            return _CIRCUMVENT_MSG
+    return None
+
+
 def check_outbound_payload(provider: str, payload: Any) -> None:
-    """Refuse a request body for a third-party extraction service that carries credentials or evasion."""
+    """Refuse a request body for a third-party extraction service that carries credentials or evasion.
+
+    Defence in depth: payloads are built in code, so this only catches a mistake or a tampered change.
+    """
     stack = [payload]
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
             for k, v in node.items():
-                low = str(k).lower()
-                for bad in _BAD_KEYS:
-                    if bad in low:
-                        rule = _CIRCUMVENT_MSG if bad in ("proxy", "captcha") else _CREDENTIAL_MSG
-                        raise PolicyViolation(
-                            f"{provider} request refused: key {k!r} breaks the rule: {rule}"
-                        )
+                bad = _key_tokens(k) & _BAD_KEY_TOKENS
+                if bad:
+                    rule = _CIRCUMVENT_MSG if bad & _CIRCUMVENT_TOKENS else _CREDENTIAL_MSG
+                    raise PolicyViolation(f"{provider} request refused: key {k!r} breaks the rule: {rule}")
                 stack.append(v)
         elif isinstance(node, (list, tuple)):
             stack.extend(node)
         elif isinstance(node, str):
-            if _COOKIE_VALUE.search(node) or "ya29." in node:
+            rule = _bad_value(node)
+            if rule:
                 raise PolicyViolation(
-                    f"{provider} request refused: a value looks like a Google session cookie or OAuth "
-                    f"token; {_CREDENTIAL_MSG}"
+                    f"{provider} request refused: a value looks like a Google credential or an evasion "
+                    f"option; {rule}"
                 )
 
 
 def check_google_key(key: str | None) -> None:
-    if key and key.startswith("ya29."):
+    """Refuse anything that is not a plain API key: OAuth tokens, bearer headers, in any case."""
+    low = (key or "").strip().casefold()
+    if "ya29." in low or low.startswith("bearer "):
         raise PolicyViolation(
-            "GOOGLE_MAPS_API_KEY looks like a personal OAuth token (ya29.); this toolkit only accepts "
-            "an API key from a dedicated Google Cloud project"
+            "the Google key looks like a personal OAuth token (ya29. or a Bearer value); this toolkit "
+            "only accepts an API key from a dedicated Google Cloud project"
         )
 
 
-_ENFORCEMENT_WORDS = (
-    "suspended",
-    "banned",
-    "abuse",
-    "unusual traffic",
-    "captcha",
-    "violat",
-    "terms of service",
-    "acceptable use",
+_ENFORCEMENT_PATTERNS = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"suspen",
+        r"\bban(ned|s)?\b",
+        r"terminat",
+        r"unusual (traffic|activity)",
+        r"automated quer",
+        r"captcha",
+        r"abus",
+        r"misuse",
+        r"violat",
+        r"terms of service",
+        r"acceptable use",
+        r"account[^.\n]{0,60}\b(blocked|disabled|closed)",
+    )
 )
 
 
@@ -279,10 +372,10 @@ def detect_enforcement(status_code: int, text: str | None) -> str | None:
     """A short reason when a response looks like enforcement rather than an ordinary error."""
     if status_code == 451:
         return "HTTP 451 (unavailable for legal reasons)"
-    low = (text or "").casefold()
-    for word in _ENFORCEMENT_WORDS:
-        if word in low:
-            return f"response mentions {word.strip()!r}"
+    for rx in _ENFORCEMENT_PATTERNS:
+        m = rx.search(text or "")
+        if m:
+            return f"response mentions {m.group(0).strip()!r}"
     return None
 
 
@@ -313,6 +406,7 @@ def status() -> dict[str, Any]:
         "registry": {"core": sorted(CORE), "conditional": sorted(CONDITIONAL)},
         "excluded_methods": list(EXCLUDED_METHODS),
         "approvals": approvals(),
+        "invalid_approvals": invalid_approvals(),
         "open_stops": open_stops(),
         "ai_host": {"env": host, "approved": bool(host and approved(host, "ai_host"))},
         "retention_cap_days": config.MAX_RETENTION_DAYS,

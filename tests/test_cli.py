@@ -83,6 +83,7 @@ def test_doctor_shape_and_no_secret_values(monkeypatch):
         "google",
         "google_aggregate",
         "google_agent_tools",
+        "gemini_maps",
         "apify",
         "dataforseo",
         "sim",
@@ -93,6 +94,7 @@ def test_doctor_shape_and_no_secret_values(monkeypatch):
         "class": "core",
     }
     assert doc["providers"]["google"] == {"available": True, "env": ["GOOGLE_MAPS_API_KEY"], "class": "core"}
+    assert doc["providers"]["gemini_maps"] == {"available": False, "env": ["GEMINI_API_KEY"], "class": "core"}
     assert doc["providers"]["dataforseo"]["env"] == ["DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"]
     assert doc["providers"]["sim"]["available"] is True
     for v in SECRETS.values():
@@ -1223,9 +1225,7 @@ def test_contributor_expansion_needs_its_own_approval(
     assert len(contributor_provider.calls) == 1
 
 
-def test_a_cookie_bearing_contributor_template_is_refused_before_any_request(
-    contributor_run, approve_provider, monkeypatch
-):
+def test_a_cookie_bearing_contributor_env_template_is_ignored(contributor_run, approve_provider, monkeypatch):
     import httpx
 
     run_id, l1, _ = contributor_run
@@ -1235,9 +1235,14 @@ def test_a_cookie_bearing_contributor_template_is_refused_before_any_request(
         "MAPS_APIFY_CONTRIBUTOR_INPUT", json.dumps({"cookies": "SID=abc", "u": "{contributor_url}"})
     )
     sent = []
-    monkeypatch.setattr(httpx.Client, "post", lambda self, *a, **k: sent.append(a) or None)
-    refusal("reviews", "contributors", run_id, "--liked", l1, "--expand", "1")
-    assert sent == []
+
+    def fake_post(self, url, json=None, **k):
+        sent.append(json)
+        return httpx.Response(201, json=[], request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    run_cli("reviews", "contributors", run_id, "--liked", l1, "--expand", "1")
+    assert sent and all("cookies" not in body and "SID=abc" not in str(body) for body in sent)
 
 
 def test_a_personal_oauth_token_as_the_google_key_is_refused(monkeypatch):
@@ -1456,3 +1461,293 @@ def test_doctor_reports_account_protection_and_provider_classes(approve_provider
         doc["providers"]["apify"]["class"] == "conditional" and doc["providers"]["apify"]["approved"] is True
     )
     assert doc["providers"]["dataforseo"]["approved"] is False
+
+
+# --- the AI-host gate holds on every path to grounded output ------------------------------------
+
+
+def _discover_run(state, provider="google_agent_tools"):
+    return RunStore.create(
+        state,
+        {
+            "queries": [],
+            "discover": ["sourdough"],
+            "bbox": BOX,
+            "depth": None,
+            "providers": [provider],
+            "cost": "free",
+            "tier": None,
+        },
+    )
+
+
+def _no_http(monkeypatch):
+    import httpx
+
+    sent = []
+    monkeypatch.setattr(httpx.Client, "post", lambda self, *a, **k: sent.append(a) or None)
+    monkeypatch.setattr(httpx.Client, "request", lambda self, *a, **k: sent.append(a) or None)
+    return sent
+
+
+@pytest.mark.parametrize("provider", ["google_agent_tools", "gemini_maps"])
+def test_search_cannot_resume_a_discover_run_even_without_an_ai_host(state, monkeypatch, provider):
+    run = _discover_run(state, provider)
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "AIzaFAKE")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaFAKE")
+    sent = _no_http(monkeypatch)
+    result = run_cli("search", "--resume", run.run_id, "-q", "quiet bakery", "--depth", "quick", expect=2)
+    assert "maps discover" in result.stderr and f"--into {run.run_id}" in result.stderr
+    assert sent == []
+
+
+def test_an_approved_ai_host_does_not_make_search_accept_a_discover_run(state, monkeypatch, ai_host):
+    run = _discover_run(state)
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "AIzaFAKE")
+    sent = _no_http(monkeypatch)
+    result = run_cli("search", "--resume", run.run_id, "-q", "quiet bakery", "--depth", "quick", expect=2)
+    assert "maps discover" in result.stderr and sent == []
+
+
+@pytest.mark.parametrize("gate", ["build_providers", "_gated"])
+@pytest.mark.parametrize("name", ["google_agent_tools", "gemini_maps"])
+def test_the_provider_gate_requires_the_ai_host_for_grounded_providers(monkeypatch, gate, name):
+    from maps import policy
+    from maps.budget import Budget
+
+    budget = Budget(Ledger(":memory:"))
+    with pytest.raises(policy.PolicyViolation, match="MAPS_AI_HOST"):
+        getattr(cli, gate)([name], budget, None, None)
+    monkeypatch.setattr(cli, "_construct_providers", lambda *a: ["constructed"])
+    monkeypatch.setenv("MAPS_AI_HOST", "testhost")
+    policy.approve("testhost", "ai_host", owner_statement="o", details={"data_handling": "d"})
+    assert getattr(cli, gate)([name], budget, None, None) == ["constructed"]
+
+
+def test_the_gate_holds_even_when_a_test_swaps_the_builder(monkeypatch):
+    from maps import policy
+    from maps.budget import Budget
+
+    monkeypatch.setattr(cli, "build_providers", lambda *a: ["fake"])
+    with pytest.raises(policy.PolicyViolation, match="MAPS_AI_HOST"):
+        cli._gated(["google_agent_tools"], Budget(Ledger(":memory:")), None, None)
+
+
+def test_discover_via_gemini_suspension_exits_3_and_records_the_stop(monkeypatch, ai_host, policy_dir):
+    import httpx
+
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaFAKE")
+
+    def post(self, url, json=None, headers=None, **k):
+        return httpx.Response(
+            403,
+            json={"error": {"message": "Consumer 'project:1' has been suspended."}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    result = run_cli(
+        "discover", "sourdough", "--via", "gemini", "--cost", "quality", "--max-usd", "1", expect=3
+    )
+    doc = json.loads(result.stdout)
+    assert doc["policy_stop"]["provider"] == "gemini_maps"
+    stops = json.loads((policy_dir / "stops.json").read_text())
+    assert stops[0]["provider"] == "gemini_maps" and stops[0]["open"]
+    # the whole Google family is now blocked, not only gemini
+    assert "stopped" in refusal("discover", "sourdough")
+
+
+# --- expiry runs on every command that touches the state directory ------------------------------
+
+
+def _expired_run(state, days=40):
+    old = RunStore.create(state, {"queries": ["x"], "providers": ["sim"]})
+    age(state, old.run_id, days)
+    return old
+
+
+def test_an_expired_run_is_gone_after_rank(state):
+    fresh = sim_search("--depth", "quick")
+    old = _expired_run(state)
+    result = run_cli("rank", fresh["run_id"])
+    assert not old.dir.exists() and old.run_id in result.stderr
+
+
+def test_an_expired_run_is_gone_after_runs(state):
+    old = _expired_run(state)
+    assert jrun("runs")["runs"] == [] and not old.dir.exists()
+
+
+def test_an_expired_run_is_gone_after_discover_even_when_refused(state):
+    old = _expired_run(state)
+    run_cli("discover", "sourdough", expect=2)  # no AI host: refused
+    assert not old.dir.exists()
+
+
+def test_an_expired_run_is_gone_after_discover_that_works(state, agent):
+    old = _expired_run(state)
+    jrun("discover", "sourdough", "--bbox", BOX)
+    assert not old.dir.exists()
+
+
+def test_an_expired_run_is_gone_after_reviews_search(state):
+    fresh = sim_search("--depth", "quick")
+    old = _expired_run(state)
+    jrun("reviews", "search", fresh["run_id"], "slow")
+    assert not old.dir.exists()
+
+
+def test_an_expired_run_is_gone_after_budget(state):
+    old = _expired_run(state)
+    run_cli("budget")
+    assert not old.dir.exists()
+
+
+def test_a_40_day_old_area_cache_entry_is_removed(state):
+    cache = state / "areas.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "riyadh": {"label": "R", "bbox": BOX, "ts": time.time() - 40 * 86400},
+                "jeddah": {"label": "J", "bbox": BOX, "ts": time.time() - 86400},
+            }
+        )
+    )
+    run_cli("runs")
+    assert list(json.loads(cache.read_text())) == ["jeddah"]
+
+
+def test_the_policy_command_does_not_touch_the_state_directory(state):
+    old = _expired_run(state)
+    run_cli("policy", "status")
+    assert old.dir.exists()
+
+
+# --- service-area businesses ----------------------------------------------------------------------
+
+
+class KwSearcher(FakeSearcher):
+    def __init__(self, name="google"):
+        super().__init__(name)
+        self.kwargs = []
+
+    def text_search(self, query, *, bbox, level=0, max_results=60, **kw):
+        self.kwargs.append(kw)
+        return super().text_search(query, bbox=bbox, level=level, max_results=max_results, **kw)
+
+
+def test_service_area_businesses_flag_reaches_the_provider_and_the_run_spec(monkeypatch, state):
+    fake = KwSearcher()
+    use_searchers(monkeypatch, fake)
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "AIzaFAKE")
+    plain = jrun("search", "-q", "plumber", "--bbox", BOX, "--depth", "quick")
+    assert fake.kwargs == [{}]
+    assert (
+        json.loads((state / "runs" / plain["run_id"] / "spec.json").read_text())["service_area_businesses"]
+        is False
+    )
+    doc = jrun("search", "-q", "plumber", "--bbox", BOX, "--depth", "quick", "--service-area-businesses")
+    assert fake.kwargs[-1] == {"include_service_area_businesses": True}
+    spec = json.loads((state / "runs" / doc["run_id"] / "spec.json").read_text())
+    assert spec["service_area_businesses"] is True
+    keys = [
+        json.loads(line)["key"]
+        for line in (state / "runs" / doc["run_id"] / "tasks.jsonl").read_text().splitlines()
+    ]
+    assert all("include_service_area_businesses" in k for k in keys)
+
+
+def test_service_area_businesses_is_honoured_on_resume(monkeypatch, state):
+    fake = KwSearcher()
+    use_searchers(monkeypatch, fake)
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "AIzaFAKE")
+    first = jrun("search", "-q", "plumber", "--bbox", BOX, "--depth", "quick", "--service-area-businesses")
+    jrun("search", "--resume", first["run_id"])
+    assert fake.calls == 1  # replayed from the checkpoint: the key still matches
+    jrun("search", "--resume", first["run_id"], "-q", "electrician")
+    assert fake.kwargs[-1] == {"include_service_area_businesses": True}
+
+
+def test_places_without_coordinates_are_kept_and_ranked(monkeypatch, state):
+    class NoCoords(FakeSearcher):
+        def text_search(self, query, *, bbox, level=0, max_results=60, **kw):
+            places = [
+                Place(
+                    "ChIJ_nocoord_abcdef1",
+                    name="Plumber One",
+                    rating=4.5,
+                    review_count=10,
+                    hits=[Hit("google", query.text, rank=1)],
+                ),
+                Place(
+                    "ChIJ_coord_abcdefg2",
+                    name="Plumber Two",
+                    lat=24.6,
+                    lng=46.6,
+                    rating=4.0,
+                    review_count=5,
+                    hits=[Hit("google", query.text, rank=2)],
+                ),
+            ]
+            return SearchPage(places=places)
+
+    use_searchers(monkeypatch, NoCoords("google"))
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "AIzaFAKE")
+    doc = jrun("search", "-q", "plumber", "--bbox", BOX, "--depth", "quick", "--service-area-businesses")
+    assert {r["name"] for r in doc["results"]} == {"Plumber One", "Plumber Two"}
+    ranked = jrun("rank", doc["run_id"], "--objective", "gems")
+    assert ranked["matched"] == 2
+    md = run_cli("rank", doc["run_id"], "--format", "md").stdout
+    assert "Plumber One" in md
+
+
+# --- eval compare ---------------------------------------------------------------------------------
+
+
+def _baseline_file(tmp_path, places, name="Owner's list", source="Maps by hand"):
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"name": name, "source": source, "places": places}))
+    return path
+
+
+def test_eval_compare_against_a_sim_run(state, tmp_path):
+    run = sim_search("--depth", "quick", "--top", "100")
+    rows = run["results"]
+    best, second, last = rows[0], rows[1], rows[-1]
+    baseline = _baseline_file(
+        tmp_path,
+        [
+            {"place_id": best["place_id"]},
+            {"name": f"  {second['name'].upper()} !!"},
+            {"name": last["name"]},
+            {"name": "A place that exists nowhere in the simulator"},
+        ],
+    )
+    doc = jrun("eval", "compare", run["run_id"], "--baseline", baseline, "--top", "5")
+    assert doc["baseline"] == {"name": "Owner's list", "source": "Maps by hand", "count": 4}
+    overlap_ids = {o["place_id"] for o in doc["overlap"]}
+    assert {best["place_id"], second["place_id"]} <= overlap_ids
+    assert len(doc["only_toolkit"]) == 5 - len(doc["overlap"])
+    assert all(r["rank"] <= 5 and "maps_url" in r for r in doc["only_toolkit"])
+    gaps = {g["name"]: g["gap"] for g in doc["only_baseline"]}
+    assert gaps["A place that exists nowhere in the simulator"] == "not retrieved"
+    assert gaps[last["name"]].startswith("retrieved, ranked #")
+    assert doc["counts"]["baseline"] == 4 and doc["counts"]["only_baseline"] == len(doc["only_baseline"])
+
+
+def test_eval_compare_marks_filtered_out_places(state, tmp_path):
+    run = sim_search("--depth", "quick", "--top", "100")
+    low = min((r for r in run["results"] if r["rating"] is not None), key=lambda r: r["rating"])
+    baseline = _baseline_file(tmp_path, [{"name": low["name"]}])
+    doc = jrun("eval", "compare", run["run_id"], "--baseline", baseline, "--min-rating", "4.9", "--top", "3")
+    assert doc["only_baseline"][0]["gap"] == "retrieved but filtered out"
+    assert doc["filters"] and doc["counts"]["only_baseline"] == 1
+
+
+def test_eval_compare_rejects_a_bad_baseline_and_an_unknown_run(state, tmp_path):
+    run = sim_search("--depth", "quick")
+    bad = _baseline_file(tmp_path, [{"name": "", "maps_url": "", "place_id": ""}])
+    r = run_cli("eval", "compare", run["run_id"], "--baseline", bad, expect=2)
+    assert "baseline" in r.stderr.lower()
+    ok = _baseline_file(tmp_path, [{"name": "x"}])
+    run_cli("eval", "compare", "nope", "--baseline", ok, expect=2)

@@ -15,16 +15,17 @@ UNVERIFIED on a live run (check first):
 Contributor-first discovery (`contributor_reviews`): given a reviewer, list the OTHER places they
 reviewed. Google's official APIs cannot do this. Everything below comes from search excerpts of
 2026-11-26 and is UNCONFIRMED (the Apify site was blocked from the build machine):
-- actor `lexis-solutions~google-maps-contributor-reviews-scraper` (the default), input `startUrls`
+- actor `lexis-solutions~google-maps-contributor-reviews-scraper` (the only one), input `startUrls`
   (contributor URLs like https://www.google.com/maps/contrib/<id>/reviews) and `maxItems`.
 - output fields `placeId`, `cid`, `rating`, `reviewCount`, `updatedAt`, `relativeDate`; the names of
   the contributor's own star rating, review text and place name are NOT confirmed, so parsing tries
   several candidates (`stars`/`reviewRating`/..., `text`/`reviewText`/..., `title`/`placeName`/...).
   A bare `rating` is only treated as the review's rating when no place-rating field exists.
 - the actor may return only about the 10 most recent reviews, whatever `limit` is.
-- alternative actor `johnvc~google-maps-contributor-reviews-api` takes a numeric contributor id.
-Configuration: env `MAPS_APIFY_CONTRIBUTOR_ACTOR` (actor id) and `MAPS_APIFY_CONTRIBUTOR_INPUT` (JSON
-input template; `{contributor_id}`, `{contributor_url}` and the token "{limit}" are substituted).
+Fixed and reviewed: the actor ids are constants in this module (`ACTOR`, `CONTRIBUTOR_ACTORS`) and
+every input is built in code. Nothing but `APIFY_TOKEN` is read from the environment, so no variable
+can point this module at another actor or reshape what is sent. Adding an actor means reviewing it
+and editing the allow-list here.
 
 Privacy: this retrieves individual reviewers' public review histories. It is off unless APIFY_TOKEN
 is set, and should be used only on contributors surfaced by the owner's own searches.
@@ -32,7 +33,6 @@ is set, and should be used only on contributors surfaced by the owner's own sear
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Any
@@ -47,7 +47,9 @@ from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
 
 ACTOR = "compass~crawler-google-places"
 BASE_URL = "https://api.apify.com/v2"
-CONTRIBUTOR_ACTOR = "lexis-solutions~google-maps-contributor-reviews-scraper"
+CONTRIBUTOR_ACTORS = ("lexis-solutions~google-maps-contributor-reviews-scraper",)  # reviewed allow-list
+CONTRIBUTOR_ACTOR = CONTRIBUTOR_ACTORS[0]
+ALLOWED_ACTORS = (ACTOR, *CONTRIBUTOR_ACTORS)
 CONTRIBUTOR_SOURCE = "apify_contributor"
 _CONTRIB_URL_RE = re.compile(r"/contrib/(\d{10,})(?!\d)")
 _CONTRIB_ID_RE = re.compile(r"\d{10,}")
@@ -81,22 +83,6 @@ def _first(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _substitute(node: Any, cid: str, curl: str, limit: int) -> Any:
-    if isinstance(node, str):
-        if node == "{limit}":
-            return limit
-        return (
-            node.replace("{contributor_id}", cid)
-            .replace("{contributor_url}", curl)
-            .replace("{limit}", str(limit))
-        )
-    if isinstance(node, list):
-        return [_substitute(x, cid, curl, limit) for x in node]
-    if isinstance(node, dict):
-        return {k: _substitute(v, cid, curl, limit) for k, v in node.items()}
-    return node
-
-
 class ApifyProvider:
     """Retrieval through the Apify Google Maps scraper (synchronous run, dataset items returned)."""
 
@@ -120,6 +106,8 @@ class ApifyProvider:
     # -- HTTP ---------------------------------------------------------------------------------
 
     def _run(self, payload: dict[str, Any], actor: str = ACTOR) -> list[dict[str, Any]]:
+        if actor not in ALLOWED_ACTORS:
+            raise ProviderError(f"apify: actor {actor!r} is not in the reviewed allow-list")
         if not self._token:
             raise ProviderError("apify: APIFY_TOKEN is not set")
         policy.check_outbound_payload(self.name, payload)
@@ -235,30 +223,17 @@ class ApifyProvider:
 
     # -- Contributor-first discovery (field names unconfirmed, see module docstring) ------------
 
-    def _contributor_input(self, cid: str, curl: str, limit: int) -> Any:
-        raw = os.environ.get("MAPS_APIFY_CONTRIBUTOR_INPUT")
-        if not raw:
-            return {"startUrls": [{"url": curl}], "maxItems": limit}
-        try:
-            template = json.loads(raw)
-        except ValueError:
-            raise ProviderError("apify: MAPS_APIFY_CONTRIBUTOR_INPUT is not valid JSON") from None
-        return _substitute(template, cid, curl, limit)
-
     def contributor_reviews(self, contributor: str, *, limit: int = 10) -> list[Place]:
         """Places this contributor reviewed, each carrying their one review (source apify_contributor)."""
         cid, curl = parse_contributor(contributor)
         if limit < 1:
             return []
-        actor = os.environ.get("MAPS_APIFY_CONTRIBUTOR_ACTOR") or CONTRIBUTOR_ACTOR
-        payload = self._contributor_input(cid, curl, limit)
-        if not isinstance(payload, dict):
-            raise ProviderError("apify: MAPS_APIFY_CONTRIBUTOR_INPUT must be a JSON object")
+        payload = {"startUrls": [{"url": curl}], "maxItems": limit}
         policy.check_outbound_payload(self.name, payload)
         self.budget.charge("apify.contributor", units=limit)
         places: list[Place] = []
         seen: set[str] = set()
-        for item in self._run(payload, actor):
+        for item in self._run(payload, CONTRIBUTOR_ACTOR):
             place = self._contributor_place(item, curl)
             if place is None or place.place_id in seen:
                 continue

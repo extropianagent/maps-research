@@ -10,7 +10,7 @@ DETAILS = {"data_rights": "dr", "retrieval_method": "rm", "downstream_use": "du"
 
 def test_registry_contents():
     assert policy.CORE == {"google", "google_aggregate", "google_agent_tools", "gemini_maps", "sim"}
-    assert policy.CONDITIONAL == {"apify", "dataforseo", "apify_contributor", "outscraper"}
+    assert policy.CONDITIONAL == {"apify", "dataforseo", "apify_contributor", "outscraper", "hasdata"}
     assert not policy.CORE & policy.CONDITIONAL
     text = " ".join(policy.EXCLUDED_METHODS).lower()
     for word in ("browser", "captcha", "proxy", "warehouse", "subscription"):
@@ -24,12 +24,20 @@ def test_exceptions():
     assert e.provider == "apify" and e.detail == "account suspended"
 
 
-def test_policy_dir_env_and_default(monkeypatch, tmp_path):
-    monkeypatch.setenv("MAPS_POLICY_DIR", str(tmp_path / "p"))
-    assert config.policy_dir() == tmp_path / "p"
-    monkeypatch.delenv("MAPS_POLICY_DIR")
+def test_policy_dir_default_and_test_override(tmp_path):
+    config.set_policy_dir_for_tests(None)
     assert config.policy_dir() == config.REPO_ROOT / "policy"
     assert (config.REPO_ROOT / "maps").is_dir()
+    config.set_policy_dir_for_tests(tmp_path / "p")
+    assert config.policy_dir() == tmp_path / "p"
+
+
+def test_environment_variable_cannot_redirect_the_policy_folder(policy_dir, monkeypatch, tmp_path):
+    policy.record_stop("google", "HTTP 403: project suspended")
+    monkeypatch.setenv("MAPS_POLICY_DIR", str(tmp_path / "elsewhere"))
+    assert config.policy_dir() == policy_dir
+    with pytest.raises(policy.PolicyViolation, match="stopped"):
+        policy.require_provider("google")
 
 
 def test_approve_records_and_is_atomic_pretty_json(policy_dir):
@@ -161,6 +169,14 @@ def test_outbound_payload_ordinary_passes():
     )
 
 
+@pytest.mark.parametrize(
+    "bad", [" ya29.abc", "Bearer ya29.abc", "YA29.abc", "bearer xyz", "  BEARER abc", "AIza-ok-ya29.inside"]
+)
+def test_check_google_key_refuses_tokens_in_any_disguise(bad):
+    with pytest.raises(policy.PolicyViolation):
+        policy.check_google_key(bad)
+
+
 def test_check_google_key():
     with pytest.raises(policy.PolicyViolation, match="dedicated"):
         policy.check_google_key("ya29.a0Af")
@@ -228,6 +244,18 @@ def test_retention_is_capped(monkeypatch):
     assert config.retention_days() == 30
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("nan", 30), ("inf", 30), ("-inf", 30), ("-5", 30), ("0", 30), ("abc", 30), ("400", 30), ("7", 7)],
+)
+def test_retention_is_always_finite_and_in_zero_to_thirty(monkeypatch, raw, expected):
+    import math
+
+    monkeypatch.setenv("MAPS_RETENTION_DAYS", raw)
+    days = config.retention_days()
+    assert days == expected and math.isfinite(days) and 0 < days <= 30
+
+
 def test_status(monkeypatch, tmp_path):
     monkeypatch.setenv("MAPS_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("MAPS_AI_HOST", "claude")
@@ -251,3 +279,214 @@ def test_status(monkeypatch, tmp_path):
         "Check each AI host's data settings before recording it",
     ]
     assert st["registry"]["conditional"] == sorted(policy.CONDITIONAL)
+
+
+@pytest.mark.parametrize(
+    ("status", "text"),
+    [
+        (403, "Account suspension in effect"),
+        (403, "Consumer 'project:1' has been suspended."),
+        (403, "This account is under a ban"),
+        (403, "Your IP has been banned"),
+        (403, "Many requests were banned"),
+        (403, "Your account has been terminated for misuse"),
+        (403, "We've detected unusual activity on your account"),
+        (403, "Unusual traffic from your network"),
+        (403, "Automated queries detected"),
+        (403, "Please solve the CAPTCHA"),
+        (403, "Your account has been blocked"),
+        (403, "Your account has been disabled by an administrator"),
+        (403, "Violation of the Terms of Use"),
+        (403, "You violated the terms of service"),
+        (403, "Acceptable Use Policy breach"),
+        (403, "Misuse of the service"),
+        (429, "abuse of the service"),
+        (451, ""),
+    ],
+)
+def test_enforcement_wording_is_detected(status, text):
+    assert policy.detect_enforcement(status, text)
+
+
+@pytest.mark.parametrize(
+    ("status", "text"),
+    [
+        (400, "API key not valid. Please pass a valid API key."),
+        (
+            403,
+            "Places API (New) has not been used in project 123 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/places.googleapis.com/overview?project=123",
+        ),
+        (
+            403,
+            "Requests to this API places.googleapis.com method google.maps.places.v1.Places.SearchText are blocked.",
+        ),
+        (403, "This API method requires billing to be enabled."),
+        (429, "Quota exceeded for quota metric 'Requests' and limit 'Requests per minute'"),
+        (429, "Resource has been exhausted (e.g. check quota)."),
+        (400, "Invalid JSON payload received."),
+        (500, "Internal error"),
+        (503, "The service is currently unavailable."),
+        (403, "The account balance is low; top up to continue."),
+    ],
+)
+def test_ordinary_errors_are_not_enforcement(status, text):
+    assert policy.detect_enforcement(status, text) is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"headers": {"Authorization": "SAPISIDHASH 1700000000_abcdef"}},
+        {"x": "SAPISIDHASH 1700000000_abcdef"},
+        {"x": "__Secure-3PAPISID=abc"},
+        {"x": "__Host-GAPS=abc"},
+        {"x": "APISID=abc; NID=xyz"},
+        {"x": "NID=xyz"},
+        {"x": "LSID=abc"},
+        {"x": "OSID=abc"},
+        {"x": "__Secure-OSID=abc"},
+        {"pwd": "hunter2"},
+        {"pass": "hunter2"},
+        {"pw": "x"},
+        {"authToken": "1//0gAbCdEf-refresh"},
+        {"auth_token": "x"},
+        {"x": "1//0gAbCdEf-refresh"},
+        {"googleAccount": {"email": "o@gmail.com", "pw": "x"}},
+        {"account": "o@gmail.com"},
+        {"x": "https://user:pw@proxy.example:8080"},
+        {"x": "https://user:pw@example.com/a"},
+        {"x": "socks5://10.0.0.1:1080"},
+        {"x": "socks://10.0.0.1:1080"},
+        {"x": "http://rotating-proxy.example:8000"},
+        {"x": "https://example.com/proxy/pool"},
+        {"useResidentialIPs": True, "rotateIp": True},
+        {"rotate": 1},
+        {"proxies": []},
+        {"Authorization": "Bearer abc"},
+        {"captchaSolver": "x"},
+    ],
+)
+def test_outbound_payload_defence_in_depth_refuses(payload):
+    with pytest.raises(policy.PolicyViolation):
+        policy.check_outbound_payload("apify", payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"passage": "x", "compass": 1, "accounting": 2, "tokenizer": "a"},
+        {"searchStringsArray": ["quiet bakery, Riyadh"], "note": "1/2 of the places"},
+        {"startUrls": [{"url": "https://www.google.com/maps/contrib/1234567890123/reviews"}], "maxItems": 5},
+    ],
+)
+def test_outbound_payload_scan_has_no_false_positives_on_ordinary_words(payload):
+    policy.check_outbound_payload("apify", payload)
+
+
+def _bodies_sent_by_providers():
+    import json as _json
+
+    import httpx
+
+    from maps.budget import Budget, Ledger
+    from maps.geography import BBox
+    from maps.models import Query
+    from maps.providers.apify import ApifyProvider
+    from maps.providers.dataforseo import DataForSEOProvider
+
+    seen: list[tuple[str, object]] = []
+
+    def apify_handler(req):
+        seen.append(("apify", _json.loads(req.content)))
+        return httpx.Response(201, json=[])
+
+    def dfs_handler(req):
+        body = _json.loads(req.content) if req.content else None
+        seen.append(("dataforseo", body))
+        status = {"id": "t1", "status_code": 20000, "status_message": "Ok.", "result": [{"items": []}]}
+        return httpx.Response(200, json={"status_code": 20000, "tasks": [status]})
+
+    budget = Budget(Ledger(":memory:"), mode="quality", max_usd=100)
+    box = BBox(24.6, 46.6, 24.7, 46.7)
+    a = ApifyProvider(budget, token="t", client=httpx.Client(transport=httpx.MockTransport(apify_handler)))
+    a.text_search(Query("bakery", "en"), bbox=box)
+    a.reviews("ChIJplaceAAAA1", limit=5, language="en")
+    a.contributor_reviews("1234567890123", limit=5)
+    d = DataForSEOProvider(
+        budget,
+        login="l",
+        password="p",
+        client=httpx.Client(transport=httpx.MockTransport(dfs_handler)),
+        sleep=lambda s: None,
+    )
+    d.text_search(Query("bakery", "en"), bbox=box)
+    d.reviews("ChIJplaceAAAA1", limit=5, language="en")
+    return seen
+
+
+def test_the_toolkits_own_payloads_pass_the_scan():
+    seen = _bodies_sent_by_providers()
+    kinds = {k for k, _ in seen}
+    assert kinds == {"apify", "dataforseo"} and len(seen) >= 5
+    for provider, body in seen:
+        if body is not None:
+            policy.check_outbound_payload(provider, body)
+
+
+def _write_approvals(policy_dir, records):
+    (policy_dir / "approvals.json").write_text(json.dumps(records))
+
+
+def test_a_bare_subject_and_kind_record_is_not_an_approval(policy_dir):
+    _write_approvals(policy_dir, [{"subject": "apify", "kind": "provider"}])
+    assert policy.approved("apify", "provider") is None
+    with pytest.raises(policy.PolicyViolation, match="incomplete.*maps policy approve apify"):
+        policy.require_provider("apify")
+
+
+def test_a_non_dict_record_never_crashes(policy_dir):
+    _write_approvals(policy_dir, ["apify"])
+    assert policy.approved("apify", "provider") is None
+    with pytest.raises(policy.PolicyViolation):
+        policy.require_provider("apify")
+    assert policy.revoke("apify") == 0
+    policy.approve("apify", "provider", owner_statement="ok", details=DETAILS)  # replaces the junk
+    policy.require_provider("apify")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"subject": "apify", "kind": "provider", "owner_statement": "", "details": DETAILS},
+        {"subject": "apify", "kind": "provider", "owner_statement": "ok", "details": {}},
+        {
+            "subject": "apify",
+            "kind": "provider",
+            "owner_statement": "ok",
+            "details": {**DETAILS, "data_rights": " "},
+        },
+        {"subject": "apify", "kind": "provider", "owner_statement": "ok", "details": ["x"]},
+        {"subject": "apify", "kind": "provider", "owner_statement": 5, "details": DETAILS},
+    ],
+)
+def test_incomplete_provider_records_are_refused(policy_dir, record):
+    _write_approvals(policy_dir, [record])
+    with pytest.raises(policy.PolicyViolation, match="incomplete"):
+        policy.require_provider("apify")
+
+
+def test_incomplete_ai_host_record_is_refused(policy_dir, monkeypatch):
+    monkeypatch.setenv("MAPS_AI_HOST", "h")
+    _write_approvals(policy_dir, [{"subject": "h", "kind": "ai_host", "owner_statement": "ok"}])
+    assert policy.approved("h", "ai_host") is None
+    with pytest.raises(policy.PolicyViolation, match="incomplete"):
+        policy.require_ai_host()
+
+
+def test_status_lists_malformed_records(policy_dir):
+    good = {"subject": "h", "kind": "ai_host", "owner_statement": "ok", "details": {"data_handling": "d"}}
+    _write_approvals(policy_dir, [good, {"subject": "apify", "kind": "provider"}, "junk"])
+    st = policy.status()
+    assert [r["subject"] for r in st["approvals"]] == ["h"]
+    assert len(st["invalid_approvals"]) == 2
+    assert any("apify" in str(r) for r in st["invalid_approvals"])

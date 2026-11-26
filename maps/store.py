@@ -5,8 +5,8 @@ search task, with the places it returned) and `reviews.jsonl`. The place set is 
 fold over those lines, so a crash loses at most the task in flight.
 
 Runs hold Google Maps content, which the Maps Platform terms do not let you keep
-indefinitely. `purge` deletes runs past the retention window; the CLI calls it on
-every search. Anything worth keeping long-term belongs in knowledge/ as place IDs
+indefinitely. `purge` deletes runs and area-cache entries past the retention window; the CLI calls it at the
+start of every command that touches the state directory. Anything worth keeping long-term belongs in knowledge/ as place IDs
 plus your own notes (docs/permissions.md).
 """
 
@@ -156,8 +156,29 @@ def list_runs(root: Path | str) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: r["created"], reverse=True)
 
 
+def _purge_area_cache(root: Path, older_than_days: float) -> None:
+    """Drop area-cache entries (`areas.json`) older than the window; Maps content expires with the runs."""
+    path = root / "areas.json"
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(cache, dict):
+        return
+    now = time.time()
+
+    def fresh(entry: Any) -> bool:
+        ts = entry.get("ts") if isinstance(entry, dict) else None
+        return isinstance(ts, int | float) and (now - ts) / 86400 <= older_than_days
+
+    kept = {k: v for k, v in cache.items() if fresh(v)}
+    if len(kept) != len(cache):
+        path.write_text(json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def purge(root: Path | str, *, older_than_days: float) -> list[str]:
-    """Delete runs older than the retention window. Returns the deleted run IDs."""
+    """Delete runs and area-cache entries older than the retention window. Returns the deleted run IDs."""
+    _purge_area_cache(Path(root), older_than_days)
     deleted = []
     for row in list_runs(root):
         if row["age_days"] > older_than_days:

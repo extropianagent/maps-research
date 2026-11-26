@@ -35,6 +35,7 @@ from .pricing import PRICES_CHECKED, SKUS
 from .providers.apify import ApifyProvider, parse_contributor
 from .providers.base import PolicyStop, ProviderError, QuotaExceeded
 from .providers.dataforseo import DataForSEOProvider
+from .providers.gemini_maps import GeminiMaps
 from .providers.google_agent_tools import MapsAgentTools
 from .providers.google_aggregate import PlacesAggregate
 from .providers.google_places import GooglePlaces
@@ -55,11 +56,13 @@ ENV_VARS: dict[str, list[str]] = {
     "google": ["GOOGLE_MAPS_API_KEY"],
     "google_aggregate": ["GOOGLE_MAPS_API_KEY"],
     "google_agent_tools": ["GOOGLE_MAPS_API_KEY"],
+    "gemini_maps": ["GEMINI_API_KEY"],
     "apify": ["APIFY_TOKEN"],
     "dataforseo": ["DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"],
     "sim": [],
 }
 SEARCH_PROVIDERS = ["google", "apify", "dataforseo", "sim"]
+GROUNDED_PROVIDERS = frozenset({"google_agent_tools", "gemini_maps"})  # their output goes to the AI host
 AREA_CACHE_DAYS = 30
 DEFAULT_RADIUS_M = 2000.0
 SIM_WORLD_PLACES = 600
@@ -398,6 +401,12 @@ def make_budget(cost: Cost) -> Budget:
 # --- providers and locations ------------------------------------------------------------------
 
 
+def _require_ai_host_for_grounded(names: list[str]) -> None:
+    """Grounded Maps output may only reach an approved AI host, whichever path built the provider."""
+    if GROUNDED_PROVIDERS & set(names):
+        policy.require_ai_host()
+
+
 def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BBox | None) -> list[Any]:
     """Construct providers by name after the account-protection check. One function so tests can swap in fakes.
 
@@ -406,6 +415,7 @@ def build_providers(names: list[str], budget: Budget, tier: str | None, bbox: BB
     """
     for name in names:
         policy.require_provider(name)
+    _require_ai_host_for_grounded(names)
     return _construct_providers(names, budget, tier, bbox)
 
 
@@ -413,6 +423,7 @@ def _gated(names: list[str], budget: Budget, tier: str | None, bbox: BBox | None
     """Every use of a provider goes through here, so the check holds even when tests swap the builder."""
     for name in names:
         policy.require_provider(name)
+    _require_ai_host_for_grounded(names)
     return build_providers(names, budget, tier, bbox)
 
 
@@ -425,6 +436,8 @@ def _construct_providers(names: list[str], budget: Budget, tier: str | None, bbo
             out.append(PlacesAggregate(budget))
         elif name == "google_agent_tools":
             out.append(MapsAgentTools(budget))
+        elif name == "gemini_maps":
+            out.append(GeminiMaps(budget))
         elif name == "apify":
             out.append(ApifyProvider(budget))
         elif name == "dataforseo":
@@ -448,8 +461,6 @@ def build_agent_tools(budget: Budget) -> Any:
 def build_discoverer(via: str, budget: Budget) -> Any:
     """The client behind `maps discover --via`. One function so tests can swap in a fake."""
     if via == "gemini":
-        from .providers.gemini_maps import GeminiMaps  # lazy: only this path needs the module
-
         return GeminiMaps(budget)
     return build_agent_tools(budget)
 
@@ -643,7 +654,7 @@ def main(ctx: click.Context) -> None:
     allowance; --cost quality --max-usd N authorises paid calls up to N dollars for that command.
 
     State lives in $MAPS_STATE_DIR (default ~/.maps-research); runs older than $MAPS_RETENTION_DAYS
-    (default and maximum 30) are deleted at the start of every search, per the Maps Platform terms.
+    (default and maximum 30) are deleted at the start of every command, per the Maps Platform terms.
 
     Account protection (`maps policy status`): third-party extraction (Apify, DataForSEO) is blocked
     until the owner approves it, discover needs an approved AI host, and a provider's enforcement
@@ -656,6 +667,14 @@ def main(ctx: click.Context) -> None:
         warn(
             f"MAPS_RETENTION_DAYS is capped at {config.MAX_RETENTION_DAYS:g} days (Maps content expires); using {config.MAX_RETENTION_DAYS:g}"
         )
+    if ctx.invoked_subcommand:
+        # Expiry runs for every command that touches the state directory, not only `search`.
+        purged = store.purge(config.state_dir(), older_than_days=config.retention_days())
+        if purged:
+            warn(
+                f"purged {len(purged)} run(s) past the {config.retention_days():g}-day retention: "
+                + ", ".join(purged)
+            )
 
 
 def _provider_info(p: Any) -> dict[str, Any]:
@@ -762,6 +781,13 @@ def area(name: str) -> None:
     help="Override the depth's ceiling on searches in this run.",
 )
 @click.option(
+    "--service-area-businesses",
+    "service_area",
+    is_flag=True,
+    help="Google only: also return pure service-area businesses (plumbers, cleaners) that have no "
+    "address on Maps. Such places may have no coordinates.",
+)
+@click.option(
     "--resume",
     "resume_id",
     metavar="RUN_ID",
@@ -779,6 +805,7 @@ def search(
     providers: tuple[str, ...],
     tier: str | None,
     max_tasks: int | None,
+    service_area: bool,
     resume_id: str | None,
     flt: filters.Filters,
     rk: Ranking,
@@ -793,13 +820,6 @@ def search(
 
     Output: run_id, coverage (what was and was not searched), budget, matched, results, next steps.
     """
-    purged = store.purge(config.state_dir(), older_than_days=config.retention_days())
-    if purged:
-        warn(
-            f"purged {len(purged)} run(s) past the {config.retention_days():g}-day retention: "
-            + ", ".join(purged)
-        )
-
     run = _open_run(resume_id) if resume_id else None
     spec = run.spec if run else {}
     # On resume, new -q/--provider are added to the run's own (original order first).
@@ -807,6 +827,14 @@ def search(
     if not qkeys:
         raise CliError("give at least one -q QUERY (or --resume a run that has queries)")
     names = list(dict.fromkeys([*(spec.get("providers") or []), *providers])) or ["google"]
+    foreign = [n for n in names if n not in SEARCH_PROVIDERS]
+    if foreign:
+        raise CliError(
+            f"search cannot use or resume provider(s) {', '.join(foreign)}: this run was made by another "
+            f"command. Add to it with `maps discover TEXT --into {resume_id}` instead."
+            if resume_id
+            else f"search cannot use provider(s) {', '.join(foreign)}"
+        )
     depth_name = depth or spec.get("depth") or "standard"
     if run and tier and spec.get("tier") and tier != spec["tier"]:
         raise CliError(
@@ -814,6 +842,7 @@ def search(
             "searches already checkpointed at one tier would be replayed at another. Start a new run."
         )
     tier = tier or spec.get("tier") or "enterprise"
+    service_area = service_area or bool(spec.get("service_area_businesses"))
 
     budget = make_budget(cost)
     bbox, label = resolve_bbox(loc, budget)
@@ -833,6 +862,7 @@ def search(
         "cost": cost.mode,
         "tier": tier,
         "area": label or spec.get("area"),
+        "service_area_businesses": service_area,
     }
     if run is None:
         run = RunStore.create(config.state_dir(), wanted)
@@ -841,7 +871,14 @@ def search(
         depth_cfg = dataclasses.replace(depth_cfg, max_tasks=max_tasks)
 
     result = retrieval.discover(
-        usable, [Query.parse(q) for q in qkeys], bbox, depth_cfg, store=run, progress=warn
+        usable,
+        [Query.parse(q) for q in qkeys],
+        bbox,
+        depth_cfg,
+        store=run,
+        progress=warn,
+        # In the checkpoint key too: a search with the flag is a different search.
+        search_kwargs={"include_service_area_businesses": True} if service_area else None,
     )
     coverage = retrieval.coverage_summary(result)
     _touch_spec(run, **wanted, coverage=coverage)
@@ -1674,6 +1711,53 @@ def eval_check(run_id: str, expect_file: str) -> None:
         raise CliError(f"cannot read expectations from {expect_file}: {e}") from None
     run = _open_run(run_id)
     emit({"name": name, "run_id": run_id, **evals.expected_recall(run.places(), expected)})
+
+
+@eval_group.command("compare")
+@click.argument("run_id")
+@click.option(
+    "--baseline",
+    "baseline_file",
+    required=True,
+    type=click.Path(dir_okay=False),
+    help='JSON file {"name": str, "source": str, "places": [{"name", "maps_url", "place_id"}]}; each place '
+    "needs at least one of the three.",
+)
+@filter_options
+@ranking_options(20)
+def eval_compare(run_id: str, baseline_file: str, flt: filters.Filters, rk: Ranking) -> None:
+    """Compare a run's top results with a hand-made list. Cost: free, makes no API call.
+
+    Matches by place ID, else by the ID in a Maps URL, else by name (casefolded, punctuation
+    ignored; equal, or one containing the other when the shorter has 5+ characters). Reports the
+    overlap, the toolkit's top results the list lacks, and the list's places the top results lack,
+    each with why: not retrieved, retrieved but filtered out, or retrieved at a lower rank.
+    """
+    try:
+        baseline = evals.load_baseline(baseline_file)
+    except ValueError as e:
+        raise CliError(f"baseline: {e}") from None
+    run = _open_run(run_id)
+    places = run.places()
+    scored = scoring.rank(filters.apply(places.values(), flt), rk.objective)
+    top = rk.top or 20
+    res = evals.compare_to_baseline(baseline, [s.place for s in scored], places.values(), top=top)
+    rows = {
+        r["place_id"]: render.place_row(scored[r["rank"] - 1], index=r["rank"]) for r in res["only_toolkit"]
+    }
+    emit(
+        {
+            "run_id": run_id,
+            "baseline": {"name": baseline.name, "source": baseline.source, "count": len(baseline.places)},
+            "top": top,
+            "objective": rk.objective,
+            "filters": flt.active(),
+            "overlap": res["overlap"],
+            "only_toolkit": [rows[r["place_id"]] for r in res["only_toolkit"]],
+            "only_baseline": res["only_baseline"],
+            "counts": res["counts"],
+        }
+    )
 
 
 if __name__ == "__main__":

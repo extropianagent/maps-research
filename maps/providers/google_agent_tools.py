@@ -310,6 +310,9 @@ class MapsAgentTools:
                 text = f"JSON-RPC error {err.get('code')}: {err.get('message')}"
             else:
                 text = f"JSON-RPC error: {err}"
+            reason = policy.detect_enforcement(200, text)
+            if reason:
+                raise PolicyStop(self.name, self._scrub(text[:300]))
             raise ProviderError(self._scrub(f"google_agent_tools: {text}"))
         return msg
 
@@ -466,6 +469,8 @@ class MapsAgentTools:
             detail = " ".join(
                 b["text"] for b in result.get("content") or [] if isinstance(b, dict) and b.get("text")
             )
+            if policy.detect_enforcement(200, detail):
+                raise PolicyStop(self.name, self._scrub(f"tool error: {detail[:300]}"))
             raise ProviderError(self._scrub(f"google_agent_tools: tool error: {detail[:300]}".rstrip(": ")))
         found, summary, blob, _source = self._parse(result)
         out = AgentSearchResult(summary=summary, raw_text=blob[:RAW_TEXT_LIMIT])

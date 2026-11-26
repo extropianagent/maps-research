@@ -585,3 +585,11 @@ def test_a_personal_oauth_token_is_refused_before_any_request():
     with pytest.raises(policy.PolicyViolation):
         p.text_search(Query("bakery"), bbox=BBOX)
     assert seen == []
+
+
+def test_a_service_area_business_without_a_location_is_kept():
+    body = {"places": [{"id": "ChIJnolocation1", "displayName": {"text": "Pipes Ltd"}, "types": ["plumber"]}]}
+    p, _ = make(lambda req: httpx.Response(200, json=body))
+    page = p.text_search(Query("plumber"), bbox=BBOX, include_service_area_businesses=True)
+    assert [x.place_id for x in page.places] == ["ChIJnolocation1"]
+    assert page.places[0].lat is None and page.places[0].lng is None and page.places[0].name == "Pipes Ltd"

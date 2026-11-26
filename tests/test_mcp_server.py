@@ -293,3 +293,23 @@ def test_a_policy_stop_comes_back_as_json_not_a_tool_error(monkeypatch, ai_host)
 def test_a_refusal_is_a_tool_error_starting_with_account_protection():
     is_error, text = call("maps_discover", text="sourdough")  # no MAPS_AI_HOST
     assert is_error and "Account protection:" in text and "MAPS_AI_HOST" in text
+
+
+def test_search_takes_the_service_area_businesses_parameter():
+    assert "--service-area-businesses" not in mcp_server.search_argv(queries=["a"])
+    assert "--service-area-businesses" in mcp_server.search_argv(queries=["a"], service_area_businesses=True)
+    doc = mcp_server.maps_search(["bakery"], providers=["sim"], depth="quick", service_area_businesses=True)
+    assert doc["run_id"] and doc["results"]
+
+
+def test_an_expired_run_is_purged_by_any_mcp_tool():
+    import os
+    import time
+
+    from maps.store import RunStore
+
+    stale = RunStore.create(os.environ["MAPS_STATE_DIR"], {"queries": ["x"]})
+    t = time.time() - 40 * 86400
+    os.utime(stale.dir / "spec.json", (t, t))
+    mcp_server.maps_runs()
+    assert not stale.dir.exists()

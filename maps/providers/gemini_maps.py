@@ -36,10 +36,11 @@ from typing import Any
 
 import httpx
 
+from .. import policy
 from ..budget import Budget
 from ..geography import BBox
 from ..models import Hit, Place, Query, Review
-from .base import ProviderError, QuotaExceeded, SearchPage
+from .base import PolicyStop, ProviderError, QuotaExceeded, SearchPage
 from .google_agent_tools import AgentSearchResult
 
 BASE_URL = "https://generativelanguage.googleapis.com"
@@ -102,8 +103,6 @@ class GeminiMaps:
             resp = self._client.post(self._url(), json=body, headers=headers)
         except httpx.HTTPError as e:
             raise ProviderError(f"gemini_maps: request failed ({type(e).__name__})") from None
-        if resp.status_code == 429:
-            raise QuotaExceeded("gemini_maps: HTTP 429, the provider's quota was reached")
         if not 200 <= resp.status_code < 300:
             detail = ""
             try:
@@ -111,6 +110,12 @@ class GeminiMaps:
                 detail = str(err.get("message") or "") if isinstance(err, dict) else str(err or "")
             except (ValueError, AttributeError):
                 detail = resp.text[:200]
+            # Enforcement first: before the quota mapping, and no retry exists to run.
+            reason = policy.detect_enforcement(resp.status_code, detail or resp.text[:300])
+            if reason:
+                raise PolicyStop(self.name, self._scrub(f"HTTP {resp.status_code}: {detail or reason}"))
+            if resp.status_code == 429:
+                raise QuotaExceeded("gemini_maps: HTTP 429, the provider's quota was reached")
             msg = f"gemini_maps: HTTP {resp.status_code}" + (f": {detail}" if detail else "")
             raise ProviderError(self._scrub(msg))
         try:
@@ -129,6 +134,7 @@ class GeminiMaps:
     def _search(self, text: str, *, bbox: BBox | None, language: str | None, level: int) -> AgentSearchResult:
         if not self._key:
             raise ProviderError("gemini_maps: GEMINI_API_KEY is not set")
+        policy.check_google_key(self._key)
         body = self._body(text, bbox, language)
         self.budget.charge(SKU)
         doc = self._post(body)

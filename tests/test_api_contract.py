@@ -111,6 +111,18 @@ def test_text_search_body_keys_are_request_properties():
     )
 
 
+def test_service_area_flag_is_a_boolean_search_text_property():
+    schema = props(PS, "GoogleMapsPlacesV1SearchTextRequest")["includePureServiceAreaBusinesses"]
+    assert schema["type"] == "boolean"
+    cap = Capture()
+    places(cap).text_search(Query("plumber"), bbox=BBOX, include_service_area_businesses=True)
+    assert cap.bodies[0]["includePureServiceAreaBusinesses"] is True
+    assert set(cap.bodies[0]) <= set(props(PS, "GoogleMapsPlacesV1SearchTextRequest"))
+    plain = Capture()
+    places(plain).text_search(Query("plumber"), bbox=BBOX)
+    assert "includePureServiceAreaBusinesses" not in plain.bodies[0]
+
+
 def test_text_search_location_restriction_matches_schemas():
     cap = Capture()
     places(cap).text_search(Query("bakery"), bbox=BBOX)
