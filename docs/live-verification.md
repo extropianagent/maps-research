@@ -1,25 +1,42 @@
 # Live verification checklist
 
-The toolkit was built and tested without network access to the real APIs: every
-HTTP call in the test suite is mocked. The items below were taken from provider
-documentation (partly through search excerpts) or from memory and have not been
-confirmed against a live response. Confirm each on first live use, then update
-this file and the code together. Tick an item only after seeing a real response.
+No request with an API key has been made yet: every billable call in the test
+suite is mocked. The unticked items below come from provider documentation
+(partly through search excerpts) and have not been seen in a live response.
+Confirm each on first live use, then update this file and the code together.
+Tick an item only after seeing a real response.
+
+## Confirmed without a key, 2026-11-26
+
+Google publishes machine-readable descriptions of these APIs, and its agent
+tools endpoint answers the MCP handshake and tool listing without a key. Both
+were fetched and are saved under `tests/fixtures/`; `tests/test_api_contract.py`
+checks the providers against them.
+
+- [x] Text Search and Place Details: method paths, every request field the
+      provider sends, every field in every field mask, and every Place and
+      Review field it reads, including `viewport`, `originalText`,
+      `authorAttribution.uri`, `googleMapsUri` and `flagContentUri`.
+- [x] At most 20 results per page; at most 5 reviews per place, sorted by
+      relevance; `minRating` works in 0.5 steps; `locationRestriction` excludes
+      results outside the box (as documented).
+- [x] Places Aggregate: `computeInsights` path, every request field, the
+      `insights` and `operatingStatus` values, `count` as a string, and
+      `placeInsights[].place`. Rating bounds must be between 1.0 and 5.0.
+- [x] Maps Experience agent tools: endpoint, handshake, tool names, and the
+      input and output schema of `search_places`.
+
+What a description cannot show is behaviour and billing. Those stay open below.
 
 ## Google Places API (New): `maps/providers/google_places.py`
 
-- [ ] Text Search returns at most 60 results per query and area (3 pages of 20).
-      Saturation detection assumes it. Check: a broad query in a dense area
-      (`maps search -q restaurant --area "…" --depth quick --max-tasks 1` with
-      `max_results` 60 via `--depth standard --max-tasks 1`) returns exactly 60.
+- [ ] Text Search stops at 60 results per query and area (3 pages of 20).
+      Saturation detection assumes it. Check with a broad query in a dense area.
 - [ ] Whether a `nextPageToken` is still offered on the third page.
-- [ ] `places.viewport` is accepted in a Text Search field mask (`maps area`),
-      and which SKU it bills under (assumed: Text Search Pro).
-- [ ] `locationRestriction.rectangle` excludes everything outside the box.
+- [ ] `places.viewport` in a Text Search field mask bills as Text Search Pro
+      (`maps area`).
 - [ ] `minRating` still filters when the field mask is IDs-only (a free way to
       bucket by rating; see `knowledge/search-lessons.md`).
-- [ ] Place Details returns at most 5 reviews, and each carries `originalText`,
-      `publishTime`, `authorAttribution.uri`, `googleMapsUri`, `flagContentUri`.
 - [ ] An exhausted daily quota is signalled with HTTP 429 (the search then
       stops cleanly and `--resume` continues the next day).
 - [ ] Field mask to SKU mapping matches `maps/pricing.py`: compare one day of
@@ -27,11 +44,6 @@ this file and the code together. Tick an item only after seeing a real response.
 
 ## Places Aggregate API: `maps/providers/google_aggregate.py`
 
-- [ ] Request field names: `filter.locationFilter.customArea.polygon.coordinates`,
-      `typeFilter.includedTypes`, `ratingFilter.minRating/maxRating`,
-      `operatingStatus`.
-- [ ] Response shape: `count` (string or number) and `placeInsights[].place`
-      as `places/<id>`.
 - [ ] `INSIGHT_PLACES` is returned only when the count is 100 or less, and what
       the API does above that (error, or count only).
 - [ ] Free allowance and price (assumed 5,000 requests/month, then $10 per 1,000).
@@ -62,11 +74,10 @@ this file and the code together. Tick an item only after seeing a real response.
 
 ## Maps Experience agent tools: `maps/providers/google_agent_tools.py`
 
-- [ ] The endpoint, the MCP handshake and the protocol version are accepted.
-- [ ] `search_places` input names (`text_query`, `location_bias`, language) as
-      discovered from the live `tools/list`.
-- [ ] The result shape: where place IDs, names and Google Maps links appear.
-- [ ] It is still free, and its quota.
+- [ ] A search with a real key returns `structuredContent` shaped as the
+      listed output schema.
+- [ ] It is free at the default page size, and its quota. Page sizes above 5
+      and extended details are billed at a higher tier and are never requested.
 
 ## Semantic review search: `maps/semantic.py`
 
