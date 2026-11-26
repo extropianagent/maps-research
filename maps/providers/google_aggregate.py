@@ -24,6 +24,22 @@ from .base import ProviderError, QuotaExceeded
 
 URL = "https://areainsights.googleapis.com/v1:computeInsights"
 PLACES_LIMIT = 100  # INSIGHT_PLACES returns at most this many IDs per request
+OPERATIONAL = ["OPERATING_STATUS_OPERATIONAL"]
+ALL_STATUSES = [
+    "OPERATING_STATUS_OPERATIONAL",
+    "OPERATING_STATUS_PERMANENTLY_CLOSED",
+    "OPERATING_STATUS_TEMPORARILY_CLOSED",
+]
+RATING_RANGE = (1.0, 5.0)  # RatingFilter: "Values must be between 1.0 and 5.0"
+
+
+def _check_ratings(min_rating: float | None, max_rating: float | None) -> None:
+    lo, hi = RATING_RANGE
+    for label, v in (("min_rating", min_rating), ("max_rating", max_rating)):
+        if v is not None and not lo <= v <= hi:
+            raise ValueError(f"{label} must be between {lo} and {hi} for Google Aggregate, got {v}")
+    if min_rating is not None and max_rating is not None and min_rating > max_rating:
+        raise ValueError(f"min_rating {min_rating} is greater than max_rating {max_rating}")
 
 
 @dataclass
@@ -61,6 +77,7 @@ class PlacesAggregate:
         max_rating: float | None,
         operational_only: bool,
     ) -> dict[str, Any]:
+        _check_ratings(min_rating, max_rating)
         if not self._key:
             raise ProviderError("google aggregate: GOOGLE_MAPS_API_KEY is not set")
         flt: dict[str, Any] = {
@@ -73,8 +90,8 @@ class PlacesAggregate:
             },
             "typeFilter": {"includedTypes": types},
         }
-        if operational_only:
-            flt["operatingStatus"] = ["OPERATING_STATUS_OPERATIONAL"]
+        # Google defaults to OPERATIONAL only when the field is absent, so "all" must be explicit.
+        flt["operatingStatus"] = OPERATIONAL if operational_only else ALL_STATUSES
         rating = {k: v for k, v in (("minRating", min_rating), ("maxRating", max_rating)) if v is not None}
         if rating:
             flt["ratingFilter"] = rating

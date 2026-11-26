@@ -79,12 +79,46 @@ def test_count_request_shape_and_string_count():
     assert budget.run_units == {"google.aggregate": 1}
 
 
-def test_filters_omitted_when_not_given():
+ALL_STATUSES = [
+    "OPERATING_STATUS_OPERATIONAL",
+    "OPERATING_STATUS_PERMANENTLY_CLOSED",
+    "OPERATING_STATUS_TEMPORARILY_CLOSED",
+]
+
+
+def test_not_operational_only_sends_all_three_statuses():
+    # Google defaults to OPERATIONAL when the field is absent, so "all" must be explicit.
     seen: list[httpx.Request] = []
     agg, _ = make(lambda r: seen.append(r) or httpx.Response(200, json={"count": 7}))
     assert agg.count(BBOX, types=["cafe"], operational_only=False) == 7
     f = json.loads(seen[0].content)["filter"]
-    assert "operatingStatus" not in f and "ratingFilter" not in f
+    assert sorted(f["operatingStatus"]) == ALL_STATUSES
+    assert "ratingFilter" not in f
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"min_rating": 0.5},
+        {"min_rating": 5.5},
+        {"max_rating": 0.0},
+        {"max_rating": 5.1},
+        {"min_rating": 4.0, "max_rating": 3.0},
+    ],
+)
+@pytest.mark.parametrize("method", ["count", "place_ids", "enumerate"])
+def test_invalid_rating_bounds_raise_before_charge_or_request(method, kw):
+    seen: list[httpx.Request] = []
+    agg, budget = make(lambda r: seen.append(r) or httpx.Response(200, json={}))
+    with pytest.raises(ValueError):
+        getattr(agg, method)(BBOX, types=["cafe"], **kw)
+    assert seen == [] and budget.run_units == {}
+
+
+def test_rating_bounds_at_limits_are_accepted():
+    agg, _ = make(lambda r: httpx.Response(200, json={"count": "1"}))
+    assert agg.count(BBOX, types=["cafe"], min_rating=1.0, max_rating=5.0) == 1
+    assert agg.count(BBOX, types=["cafe"], min_rating=3.0, max_rating=3.0) == 1
 
 
 def test_single_rating_bound_only():
