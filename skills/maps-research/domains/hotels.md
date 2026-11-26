@@ -7,6 +7,11 @@ Prices, availability and room types are not in the Places data this toolkit
 reads. Say so in the report, every time. The search finds and vets places; the
 owner checks price and dates elsewhere.
 
+Specialist hotel sources (booking sites, curated hotel directories) are outside
+this toolkit's Maps-only scope. Use one only when the owner asks for it by name,
+keep its results labelled as its own, and never merge its scores with Maps
+ratings.
+
 ## Area and keywords
 - Location decides most hotel choices. Search `--near` the place the owner
   needs to be, with a radius they would walk or drive, before any city-wide search.

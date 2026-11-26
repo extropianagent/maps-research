@@ -15,8 +15,9 @@ and what it costs. With no API key, `--provider sim` searches a simulated city.
 
 ## 1. Brief
 
-Read `knowledge/preferences.md`, `knowledge/feedback-log.md` and
-`knowledge/search-lessons.md`, then fix five settings from the owner's words:
+Read `knowledge/preferences.md`, `knowledge/feedback-log.md`,
+`knowledge/curators.md` and `knowledge/search-lessons.md`, then fix five
+settings from the owner's words:
 
 | Setting | How to read the request | Default |
 |---|---|---|
@@ -51,6 +52,7 @@ keywords, filters, evidence words and report details of its domain:
 | a tradesperson, contractor or service to hire | `domains/hiring.md` |
 | what to see or do in a city or district | `domains/city-exploration.md` |
 | whether a place's reviews or reputation hold up | `domains/investigation.md` |
+| people whose judgement to follow, or places through curators the owner trusts | `domains/curators.md` |
 
 Anything else: continue with this file alone.
 

@@ -21,6 +21,11 @@ finding. Signals from under 20 reviews are low confidence by the tool's own rule
    provider that the owner has approved (`docs/account-protection.md`). Without
    one, say what the sample cannot show.
 
+## What not to infer
+Reports that reviews are bought in some market are leads, not a measure of how
+common it is and not evidence about this business. A reviewer's nationality,
+language or name says nothing about credibility.
+
 ## Report
 A table: signal, value, what it would mean, the innocent reading. Conclude in
 the form "consistent with", "not consistent with" or "not enough to say".
