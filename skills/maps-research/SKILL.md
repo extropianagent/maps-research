@@ -76,7 +76,8 @@ the results in importance:
 - Gaps, and the depth allows more: `maps search --resume RUN --depth <deeper>`.
 - Stopped by the budget guard: continue with what was found. The guard's refusal
   is a result to report. Spending is the owner's decision alone.
-- Exit code 3, or a refusal starting "Account protection:": the search is over.
+- Exit code 3, or a refusal starting "Account protection:" or "Spending:": the
+  search is over.
   Report what the tool said to the owner and follow `docs/account-protection.md`.
 
 To look at the results again, or with other filters or another ranking, use

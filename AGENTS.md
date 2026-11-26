@@ -17,14 +17,20 @@ state what the command does and what it costs.
 - **Free-first.** Never pass `--cost quality` unless the owner's request
   authorizes spending and gives a ceiling. When the budget guard stops a search,
   report what was covered and what was not. A refusal from the guard is a result.
+  The caps are the owner's records; a refusal starting "Spending:" is final.
+  After any session that made real requests, commit `policy/usage.json`: it is
+  the only memory of what has been used. If requests look out of control, run
+  `maps policy kill --reason "..."` first and explain afterwards.
 - **Account protection is fixed.** Depth and spending vary per request; the
   rules in `docs/account-protection.md` never do, and `maps/policy.py` enforces
   them. A refusal that starts "Account protection:" is final for you: report
   it. Exit code 3 with a `policy_stop` block means a provider signalled
   enforcement: stop, tell the owner what it said, commit `policy/stops.json`.
-  Approvals and clearing a stop are the owner's decisions. Run
-  `maps policy approve` or `maps policy clear-stop` only with the owner's own
-  statement from this conversation, quoted word for word.
+  Approvals, clearing a stop, lifting the kill switch and reconciling usage
+  are the owner's decisions. Run `maps policy approve`, `clear-stop`, `resume`
+  or `maps budget reconcile` only with the owner's own statement from this
+  conversation, quoted word for word. Nothing real runs until the records in
+  `docs/account-protection.md` exist; the simulator needs none.
 - **Maps content is not kept.** Search results live in the state directory
   (outside the repo) and expire. Commit place IDs, Maps links and the owner's own
   notes to `knowledge/`; never review text, addresses or rating tables. Read

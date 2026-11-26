@@ -68,9 +68,12 @@ the token check works today with any client that can send a header.
 
 ## Caveat: the disk is temporary
 
-A Cloud Run container's disk disappears when the instance stops. Stored runs and the usage ledger
-reset between instances, so the toolkit's own budget guard undercounts. The daily quota cap you set
-in the Google console is the real spend limit. See [setup.md](setup.md).
+A Cloud Run container's disk disappears when the instance stops. Stored runs are lost, and so is
+anything the server writes to its policy folder: usage counters, stops and the kill switch. A
+deployed server therefore cannot be trusted to remember what it has spent. Deploy it only with a key
+that cannot be charged, or with a quota cap in the Google console sized to what you accept losing.
+Approvals are read from the image, so they must be recorded and committed before building it.
+See [account-protection.md](account-protection.md) and [setup.md](setup.md).
 
 ## Status
 

@@ -91,38 +91,64 @@ uv sync --extra semantic
 
 ## 6. State and retention
 
-Search results are stored outside the repo, in `MAPS_STATE_DIR` (default `~/.maps-research`). Runs older than `MAPS_RETENTION_DAYS` (default 30) are deleted at the start of every search. To delete everything now:
+Search results are stored outside the repo, in `MAPS_STATE_DIR` (default `~/.maps-research`). Runs and cached areas older than `MAPS_RETENTION_DAYS` (default 30, never more) are deleted at the start of every command. To delete everything now:
 
 ```bash
 uv run maps purge --all
 ```
 
-In an ephemeral cloud container the state directory disappears with the container. Runs and the usage ledger then reset, so the ledger undercounts across sessions. This is another reason the Google quota cap in section 2 matters.
+In an ephemeral cloud container the state directory disappears with the container. The usage counters do not live there: they are in `policy/usage.json` in the repository, numbers only, and must be committed after any session that made real requests. The Google quota cap in section 2 remains the outer limit.
 
-## 7. First live run checklist
+## 7. First live run
 
-1. Check the key is seen:
+Nothing that touches a real service runs until four records exist (`docs/account-protection.md`). Each is your decision, recorded in your words. With a Maps Demo Key the sequence is:
+
+1. Record that you checked Google's terms for this use:
+
+```bash
+uv run maps policy approve google --kind service_use --owner-statement "<your words>" --terms-checked "<what you checked>"
+```
+
+2. Record that the key cannot be charged:
+
+```bash
+uv run maps policy approve google --kind spend --owner-statement "<your words>" --billing none
+```
+
+3. Name the AI host and record that its data settings exclude training on and retention of your conversations:
+
+```bash
+export MAPS_AI_HOST=claude-code-cloud
+```
+
+```bash
+uv run maps policy approve claude-code-cloud --kind ai_host --owner-statement "<your words>" --data-handling "<what its settings say>"
+```
+
+4. Check what is configured and approved:
 
 ```bash
 uv run maps doctor
 ```
 
-2. Resolve your city to a search box (one Text Search Pro call):
+5. Resolve your city to a search box (one request):
 
 ```bash
 uv run maps area "<your city>"
 ```
 
-3. Run one cheap search:
+6. Run one cheap search:
 
 ```bash
 uv run maps search -q bakery --area "<your city>" --depth quick
 ```
 
-4. See what it used:
+7. See what it used, then commit `policy/`:
 
 ```bash
 uv run maps budget
 ```
 
-5. Work through `docs/live-verification.md` and tick each item only after seeing a real response.
+8. Work through `docs/live-verification.md` and tick each item only after seeing a real response.
+
+With a billed key, step 2 carries your caps and the date you read the prices instead of `--billing none`. The Aggregate API, the agent tools and Gemini grounding each need their own `service_use` record (`google_aggregate`, `google_agent_tools`, `gemini_maps`).

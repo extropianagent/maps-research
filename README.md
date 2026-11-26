@@ -110,7 +110,16 @@ Cost (`--cost`):
 
 ## What it costs
 
-The default is free: the guard refuses any request that would cost money and stops at 90% of each free monthly allowance, keeping a 10% reserve. When it stops a search early, the result says what was covered and what was not. The guard counts only this toolkit's own usage, kept in a ledger in the state folder. It cannot see other apps using the same key, and in a cloud session the ledger is lost when the container goes away, so the guard only protects within one session. The guarantee of zero spending is therefore a daily quota cap you set in Google Cloud, which Google enforces whatever this toolkit believes; see `docs/setup.md`.
+Nothing, unless you say otherwise. Every request to a real service passes
+through one gateway that reserves its cost first. Nothing is sent until you
+have recorded, per provider, whether its key can be charged and what the caps
+are. Without `--cost quality` nothing that would cost money is sent, and each
+free allowance stops at 90%. An unknown or stale price blocks the request. Your
+caps cannot be raised from the command line, a kill switch stops everything at
+once, and the usage counters are kept in the repository so they survive a
+cloud machine. The toolkit only sees its own requests, so a quota cap in the
+provider's console stays the outer limit: see `docs/account-protection.md` and
+`docs/setup.md`.
 
 ## Status
 
