@@ -1,0 +1,13 @@
+{
+  "name": "example: food, Ask Maps",
+  "source": "ask-maps",
+  "request": "the exact request typed into the baseline",
+  "recorded_on": "YYYY-MM-DD",
+  "places": [
+    {
+      "name": "Place name as the baseline gave it",
+      "maps_url": "",
+      "place_id": ""
+    }
+  ]
+}

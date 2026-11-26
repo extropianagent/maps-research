@@ -21,7 +21,7 @@ IDs that a good search for some request must find: places you know are good, or
 places a search missed that you later found another way. Check any run against it:
 
 ```bash
-maps eval check RUN_ID --expect evals/benchmarks/riyadh-bakeries.json
+maps eval check RUN_ID --expect evals/benchmarks/food.json
 ```
 
 Keep a few benchmarks aside that you never tune against, so an improvement can be
@@ -30,6 +30,10 @@ checked on searches it was not designed for.
 **Baseline.** "Ordinary Google Maps" is approximated by `--depth quick` with one
 query: one capped search of the whole area. Every claim that the toolkit finds
 more should be a comparison against that.
+
+**Against ordinary AI and Ask Maps.** `benchmark-protocol.md` is the procedure for
+comparing the toolkit with what the owner would get without it, one real request
+per domain. Run it before relying on the toolkit and after each method change.
 
 ## Rules
 

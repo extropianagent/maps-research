@@ -1,0 +1,8 @@
+{
+  "name": "hiring: replace with the owner's real request",
+  "domain": "hiring",
+  "request": "tile installers in <city> with a rating no higher than 4.5 and at least 10 reviews; check workmanship",
+  "area": "",
+  "notes": "Place IDs a good search must find: places the owner knows are good, plus good places a baseline named that the toolkit missed.",
+  "expected_place_ids": []
+}
