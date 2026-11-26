@@ -96,6 +96,22 @@ The command exits with code 3 and its output carries a `policy_stop` block.
 uv run maps policy clear-stop google --owner-statement "<the owner's words>"
 ```
 
+## What this protection is, and is not
+
+The rules hold against anything the toolkit's commands, options and environment
+variables can express. The policy records live in a fixed folder (`policy/` in
+the repository) that no setting can redirect, and the extraction actors the
+toolkit may run are fixed in code.
+
+They do not hold against someone rewriting the code or hand-editing the policy
+files. An agent with a shell can do both. That is why approvals are recorded in
+the owner's words, in git, where a change is visible in the history, and why
+`AGENTS.md` makes those commands the owner's decision alone. Review changes to
+`policy/` and `maps/policy.py` like any change to a lock.
+
+The layer was attacked by an independent reviewer on 2026-11-26. Fourteen ways
+past it were found and closed, each with a regression test.
+
 ## Known gaps
 
 - Enforcement detection reads the wording of error messages. An unfamiliar
