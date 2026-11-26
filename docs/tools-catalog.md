@@ -41,6 +41,22 @@ All are conditional: refused by the toolkit until an approval is recorded.
 | Outscraper | Same ground as the two above. | Registered, not built. |
 | [HasData](https://github.com/HasData/hasdata-mcp) | An MCP proxy to a scraping service, including reviews and contributor reviews. | Registered, not built. |
 
+## Named in the master plan, not audited here
+
+Recorded so they are not rediscovered. None was read or run; the descriptions
+are the plan's, taken from vendor claims and posts. None is enabled.
+
+| Tool | What it is said to be | Status |
+|---|---|---|
+| [Hotelist](https://hotelist.com/) and its MCP | A curated hotel directory with its own rating method. | Outside the Maps-only scope. Only on the owner's explicit request, kept separate from Maps results. |
+| Booking.com | Dates, prices, room filters. | Same: the owner checks price and availability there; nothing is imported. |
+| Bing Maps | Another map corpus. | Outside scope. |
+| [maps-contrib](https://github.com/adnXone/maps-contrib) | Per-contributor review export by browser automation. | Excluded: automated scraping of reviewer histories. |
+| [ScrapePass](https://scrapepass.com/tools/google-maps-reviews-scraper) | Per-business review export. | Conditional at most; not registered. |
+| [gosom/google-maps-scraper](https://github.com/gosom/google-maps-scraper) | Unofficial bulk extraction. | Excluded. |
+| MapLeadFinder | A browser-extension scraper. | Excluded. |
+| [Billwarden](https://billwarden.com/) | Billing-spike monitoring. | A possible extra alert. It would need access to billing data, so audit it first; it does not replace the spending gateway. |
+
 ## Ideas taken, and ideas noted
 
 **Taken, from the Restaurant Skill:** preferences live in plain files the owner
